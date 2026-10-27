@@ -1,18 +1,14 @@
 import { z } from "zod";
-import { sessionSchema } from "./contracts";
+import { workspaceInfoSchema } from "./contracts";
 import { ApiError } from "./errors";
-async function send(
-  path: string,
-  body: unknown,
-  token?: string,
-): Promise<unknown> {
+async function send(path: string, body: unknown): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(path, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        "X-Rhythm-Client": "1",
       },
       body: JSON.stringify(body),
       cache: "no-store",
@@ -41,27 +37,18 @@ async function send(
   }
   return data;
 }
-export function createApi(token: string, expired: () => void) {
+export function createApi() {
   return async <T>(body: unknown, schema: z.ZodType<T>): Promise<T> => {
-    try {
-      const data = await send("/v1/browser/command", body, token);
-      const parsed = schema.safeParse(data);
-      if (!parsed.success) throw new ApiError("invalid_response");
-      return parsed.data;
-    } catch (error) {
-      if (error instanceof ApiError && error.code === "unauthorized") expired();
-      throw error;
-    }
+    const parsed = schema.safeParse(await send("/v1/browser/command", body));
+    if (!parsed.success) throw new ApiError("invalid_response");
+    return parsed.data;
   };
 }
 export type Api = ReturnType<typeof createApi>;
-export async function pair(code: string) {
-  const parsed = sessionSchema.safeParse(
-    await send("/v1/browser/session", { code }),
+export async function workspaceInfo() {
+  const parsed = workspaceInfoSchema.safeParse(
+    await send("/v1/browser/info", {}),
   );
   if (!parsed.success) throw new ApiError("invalid_response");
   return parsed.data;
-}
-export async function disconnect(token: string) {
-  await send("/v1/browser/disconnect", {}, token);
 }

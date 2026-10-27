@@ -25,7 +25,6 @@ pub mod services;
 pub mod terminal;
 pub mod workload_id;
 
-pub mod browser_access;
 mod browser_api;
 pub mod browser_launch;
 pub mod demo;

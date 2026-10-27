@@ -6,8 +6,7 @@ import {
   onMount,
   onCleanup,
 } from "solid-js";
-import { createApi, disconnect } from "./api/client";
-import { readSession, clearSession, type Session } from "./session/storage";
+import { createApi } from "./api/client";
 import { createWorkspace } from "./workloads/workspace";
 import {
   items,
@@ -17,7 +16,6 @@ import {
   type Kind,
   type Item,
 } from "./workloads/presentation";
-import { Connect } from "./components/Connect";
 import { Icon } from "./components/Icon";
 import { WorkTable } from "./components/WorkTable";
 import { WorkDetail } from "./components/WorkDetail";
@@ -38,35 +36,7 @@ function route() {
   return { page, id };
 }
 export default function App() {
-  const [session, setSession] = createSignal<Session | undefined>(
-    readSession(),
-  );
-  const [expired, setExpired] = createSignal(false);
-  function expire() {
-    clearSession();
-    setExpired(true);
-    setSession(undefined);
-  }
-  return (
-    <Show
-      when={session()}
-      fallback={
-        <Connect
-          connected={(s) => {
-            setExpired(false);
-            setSession(s);
-          }}
-          expired={expired()}
-        />
-      }
-      keyed
-    >
-      {(active) => <Workspace session={active} expire={expire} />}
-    </Show>
-  );
-}
-function Workspace(props: { session: Session; expire: () => void }) {
-  const api = createApi(props.session.token, props.expire);
+  const api = createApi();
   const data = createWorkspace(api);
   const [current, setCurrent] = createSignal(route());
   const [search, setSearch] = createSignal("");
@@ -139,13 +109,6 @@ function Workspace(props: { session: Session; expire: () => void }) {
       clearTimeout(toastTimer);
     });
   });
-  async function leave() {
-    try {
-      await disconnect(props.session.token);
-    } finally {
-      props.expire();
-    }
-  }
   const title = () =>
     ({
       overview: "Background work, in view.",
@@ -227,13 +190,6 @@ function Workspace(props: { session: Session; expire: () => void }) {
                   : "Connecting…"}
               </small>
             </span>
-            <button
-              class="icon-button"
-              aria-label="Disconnect browser"
-              onClick={() => void leave()}
-            >
-              <Icon name="logout" />
-            </button>
           </div>
         </div>
       </aside>
@@ -265,7 +221,7 @@ function Workspace(props: { session: Session; expire: () => void }) {
           </div>
         </header>
         <main id="workspace-main" class="workspace-main" tabIndex={-1}>
-          <Show when={props.session.demo}>
+          <Show when={data.snapshot()?.demo}>
             <div class="demo-banner">
               <span>
                 <Icon name="play" />

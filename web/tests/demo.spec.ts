@@ -14,7 +14,6 @@ test("disposable demo uses real services, schedules, controls and logs", async (
   const lines = createInterface({ input: child.stdout! });
   const launch = await new Promise<{
     url: string;
-    code: string;
     demo: boolean;
   }>((resolve, reject) => {
     const timer = setTimeout(
@@ -46,22 +45,6 @@ test("disposable demo uses real services, schedules, controls and logs", async (
   });
   try {
     expect(launch.demo).toBe(true);
-    const response = await fetch(new URL("/v1/browser/session", launch.url), {
-      method: "POST",
-      headers: {
-        Origin: new URL(launch.url).origin,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ code: launch.code }),
-    });
-    if (!response.ok) throw new Error("Demo pairing failed");
-    const session = await response.json();
-    // Pair before opening a page so credentials never enter recorded pixels.
-    await context.addInitScript(
-      (s) =>
-        sessionStorage.setItem("rhythm.browser-session", JSON.stringify(s)),
-      session,
-    );
     const page = await context.newPage();
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
@@ -71,6 +54,10 @@ test("disposable demo uses real services, schedules, controls and logs", async (
     ).toBeVisible();
     await expect(
       page.getByRole("link", { name: "Inspect sample-indexer" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Refresh workspace" }).click();
+    await expect(
+      page.locator(".attention-row").filter({ hasText: "sample-export" }),
     ).toBeVisible();
     await page.waitForTimeout(900);
     await page.screenshot({

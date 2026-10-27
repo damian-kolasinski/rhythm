@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { Page, BrowserContext } from "@playwright/test";
+import type { Page } from "@playwright/test";
 const execute = promisify(execFile);
 export const binary =
   process.env.RHYTHM_BIN ??
@@ -56,7 +56,7 @@ export class Runtime {
     if (!response.ok) throw new Error("Fixture request failed");
     return response.json();
   }
-  async code() {
+  async launch(): Promise<{ url: string; demo: boolean }> {
     const out = await execute(binary, [
       "--json",
       "--data-dir",
@@ -64,35 +64,14 @@ export class Runtime {
       "ui",
       "--no-open",
     ]);
-    return JSON.parse(out.stdout).code as string;
+    return JSON.parse(out.stdout);
   }
   async connect(page: Page) {
-    const code = await this.code();
-    await page.goto(this.origin);
-    await page.getByLabel("Paste your single-use browser code").fill(code);
-    await page.getByRole("button", { name: "Connect to workspace" }).click();
+    const launch = await this.launch();
+    await page.goto(launch.url);
     await page
       .getByRole("heading", { name: "Background work, in view." })
       .waitFor();
-  }
-  async session(context: BrowserContext) {
-    const response = await fetch(`${this.origin}/v1/browser/session`, {
-      method: "POST",
-      headers: { Origin: this.origin, "Content-Type": "application/json" },
-      body: JSON.stringify({ code: await this.code() }),
-    });
-    if (!response.ok) throw new Error("Fixture pairing failed");
-    const session = await response.json();
-    await context.addInitScript(
-      ({ origin, session }) => {
-        if (location.origin === origin)
-          sessionStorage.setItem(
-            "rhythm.browser-session",
-            JSON.stringify(session),
-          );
-      },
-      { origin: this.origin, session },
-    );
   }
   async stop() {
     if (this.child.exitCode === null && this.child.signalCode === null) {

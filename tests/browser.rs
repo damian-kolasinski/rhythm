@@ -42,29 +42,11 @@ impl Fixture {
             url: launch.url.trim_end_matches('/').into(),
         }
     }
-    async fn code(&self) -> String {
-        browser_launch::prepare(&self.root).await.unwrap().code
-    }
-    async fn pair(&self, code: &str) -> String {
-        let response = self
-            .client
-            .post(format!("{}/v1/browser/session", self.url))
-            .header("Origin", &self.url)
-            .json(&json!({"code":code}))
-            .send()
-            .await
-            .unwrap();
-        assert!(response.status().is_success());
-        response.json::<Value>().await.unwrap()["token"]
-            .as_str()
-            .unwrap()
-            .into()
-    }
-    async fn command(&self, token: &str, body: Value) -> reqwest::Response {
+    async fn command(&self, body: Value) -> reqwest::Response {
         self.client
             .post(format!("{}/v1/browser/command", self.url))
             .header("Origin", &self.url)
-            .bearer_auth(token)
+            .header("x-rhythm-client", "1")
             .json(&body)
             .send()
             .await
@@ -77,98 +59,112 @@ impl Drop for Fixture {
         let _ = self.runtime.wait();
     }
 }
-
 #[tokio::test]
-async fn pairing_requires_exact_origin_and_is_single_use_with_separate_credentials() {
+async fn direct_workspace_requires_matching_origin_and_custom_client_header() {
     let f = Fixture::new().await;
-    let code = f.code().await;
     for origin in [None, Some("http://example.invalid"), Some("null")] {
-        let mut request = f
+        let mut r = f
             .client
-            .post(format!("{}/v1/browser/session", f.url))
-            .json(&json!({"code":code}));
-        if let Some(origin) = origin {
-            request = request.header("Origin", origin)
-        }
-        assert_eq!(request.send().await.unwrap().status(), 401);
-    }
-    let token = f.pair(&code).await;
-    assert_eq!(
-        f.client
-            .post(format!("{}/v1/browser/session", f.url))
-            .header("Origin", &f.url)
-            .json(&json!({"code":code}))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
-    let cli = rhythm::local_access::Access::read(&f.root).unwrap();
-    for credential in [cli.credential(), &code] {
-        assert_eq!(
-            f.command(credential, json!({"operation":"list"}))
-                .await
-                .status(),
-            401
-        );
-    }
-    assert_eq!(
-        f.client
-            .post(format!("{}/v1/command", f.url))
-            .bearer_auth(&token)
-            .json(&json!({"operation":"list"}))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
-    assert_eq!(
-        f.client
             .post(format!("{}/v1/browser/command", f.url))
-            .bearer_auth(&token)
-            .json(&json!({"operation":"list"}))
-            .send()
-            .await
-            .unwrap()
-            .status(),
-        401
-    );
-    assert_eq!(
-        f.command(&token, json!({"operation":"shutdown"}))
-            .await
-            .status(),
-        403
-    );
-    assert!(local_api::call(&f.root, &Request::Status).await.is_ok());
+            .header("x-rhythm-client", "1")
+            .json(&json!({"operation":"list"}));
+        if let Some(origin) = origin {
+            r = r.header("Origin", origin);
+        }
+        assert_eq!(r.send().await.unwrap().status(), 401);
+    }
+    for header in [None, Some("wrong")] {
+        let mut r = f
+            .client
+            .post(format!("{}/v1/browser/command", f.url))
+            .header("Origin", &f.url)
+            .json(&json!({"operation":"list"}));
+        if let Some(value) = header {
+            r = r.header("x-rhythm-client", value);
+        }
+        assert_eq!(r.send().await.unwrap().status(), 401);
+    }
     assert!(
-        f.command(&token, json!({"operation":"list"}))
+        f.command(json!({"operation":"list"}))
             .await
             .status()
             .is_success()
     );
-    let response = f
-        .client
-        .post(format!("{}/v1/browser/disconnect", f.url))
-        .header("Origin", &f.url)
-        .bearer_auth(&token)
-        .send()
-        .await
-        .unwrap();
-    assert!(response.status().is_success());
     assert_eq!(
-        f.command(&token, json!({"operation":"list"}))
+        f.command(json!({"operation":"shutdown"})).await.status(),
+        403
+    );
+    assert!(local_api::call(&f.root, &Request::Status).await.is_ok());
+    let localhost = f.url.replace("127.0.0.1", "localhost");
+    assert!(
+        f.client
+            .post(format!("{}/v1/browser/command", f.url))
+            .header("Host", localhost.trim_start_matches("http://"))
+            .header("Origin", &localhost)
+            .header("x-rhythm-client", "1")
+            .json(&json!({"operation":"list"}))
+            .send()
             .await
+            .unwrap()
+            .status()
+            .is_success()
+    );
+    // An allowed Host cannot be mixed with the other allowed host's Origin.
+    assert_eq!(
+        f.client
+            .post(format!("{}/v1/browser/command", f.url))
+            .header("Origin", &localhost)
+            .header("x-rhythm-client", "1")
+            .json(&json!({"operation":"list"}))
+            .send()
+            .await
+            .unwrap()
             .status(),
         401
     );
+    assert_eq!(
+        f.client
+            .post(format!("{}/v1/command", f.url))
+            .header("Origin", &f.url)
+            .header("x-rhythm-client", "1")
+            .json(&json!({"operation":"list"}))
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        401
+    );
+    for old in [
+        "/v1/browser/session",
+        "/v1/browser-code",
+        "/v1/browser/disconnect",
+    ] {
+        assert_eq!(
+            f.client
+                .post(format!("{}{old}", f.url))
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            404
+        );
+    }
+    let launch = browser_launch::prepare(&f.root).await.unwrap();
+    let value = serde_json::to_value(launch).unwrap();
+    assert!(value.get("code").is_none());
+    assert!(value.get("token").is_none());
+    assert_eq!(value["demo"], false);
 }
-
 #[tokio::test]
 async fn embedded_assets_and_errors_enforce_response_policy_without_private_data() {
     let f = Fixture::new().await;
-    for path in ["/", "/assets/app.js", "/assets/app.css"] {
+    for path in [
+        "/",
+        "/assets/app.js",
+        "/assets/app.css",
+        "/assets/dm-sans.woff2",
+        "/assets/dm-sans-license.txt",
+    ] {
         let response = f
             .client
             .get(format!("{}{path}", f.url))
@@ -211,12 +207,8 @@ async fn embedded_assets_and_errors_enforce_response_policy_without_private_data
             .status(),
         404
     );
-    let token = f.pair(&f.code().await).await;
     let response = f
-        .command(
-            &token,
-            json!({"operation":"create","definition":{"private":"private-source-value"}}),
-        )
+        .command(json!({"operation":"create","definition":{"private":"private-source-value"}}))
         .await;
     assert_eq!(response.status(), 400);
     assert!(
@@ -226,24 +218,38 @@ async fn embedded_assets_and_errors_enforce_response_policy_without_private_data
             .unwrap()
             .contains("private-source-value")
     );
+    let response = f.command(json!({"private":"x".repeat(131073)})).await;
+    assert_eq!(response.status(), 400);
+    let preflight = f
+        .client
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/v1/browser/command", f.url),
+        )
+        .header("Origin", "http://example.invalid")
+        .header("Access-Control-Request-Method", "POST")
+        .header("Access-Control-Request-Headers", "x-rhythm-client")
+        .send()
+        .await
+        .unwrap();
+    assert!(
+        !preflight
+            .headers()
+            .contains_key("access-control-allow-origin")
+    );
 }
-
 #[tokio::test]
 async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
     let f = Fixture::new().await;
-    let token = f.pair(&f.code().await).await;
     let definition = json!({"id":"sample-browser","command":["/bin/sh","-c","printf browser-output"],"working_directory":"/tmp","restart":"never"});
     assert!(
-        f.command(
-            &token,
-            json!({"operation":"create","definition":definition})
-        )
-        .await
-        .status()
-        .is_success()
+        f.command(json!({"operation":"create","definition":definition}))
+            .await
+            .status()
+            .is_success()
     );
     assert!(
-        f.command(&token, json!({"operation":"start","id":"sample-browser"}))
+        f.command(json!({"operation":"start","id":"sample-browser"}))
             .await
             .status()
             .is_success()
@@ -251,7 +257,7 @@ async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
     let mut execution_id = None;
     for _ in 0..150 {
         let response = f
-            .command(&token, json!({"operation":"history","id":"sample-browser"}))
+            .command(json!({"operation":"history","id":"sample-browser"}))
             .await
             .json::<Value>()
             .await
@@ -263,10 +269,7 @@ async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     let logs = f
-        .command(
-            &token,
-            json!({"operation":"logs","execution_id":execution_id.unwrap()}),
-        )
+        .command(json!({"operation":"logs","execution_id":execution_id.unwrap()}))
         .await
         .json::<Value>()
         .await
@@ -275,7 +278,6 @@ async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
     let definition = json!({"id":"sample-browser","command":["/usr/bin/true"],"working_directory":"/tmp","trigger":{"type":"interval","every_ms":1000},"overlap":"skip","missed":"skip"});
     assert!(
         f.command(
-            &token,
             json!({"operation":"schedule","command":{"operation":"create","definition":definition}})
         )
         .await
@@ -298,35 +300,37 @@ async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
         matches!(schedules,rhythm::runtime_protocol::Response::Schedule{response:rhythm::schedules::Response::Schedules{schedules}} if schedules.len()==1)
     );
 }
-
 #[tokio::test]
-async fn browser_launcher_rejects_terminal_controls_from_a_reused_port() {
+async fn browser_launcher_rejects_unexpected_or_oversized_info_from_a_reused_port() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let temp = TempDir::new().unwrap();
-    let root = Root::open(temp.path().join("state")).unwrap();
-    let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
-    rhythm::local_access::Access::create(listener.local_addr().unwrap().port())
-        .unwrap()
-        .save(&root)
-        .unwrap();
-    let server = tokio::spawn(async move {
-        let (mut stream, _) = listener.accept().await.unwrap();
-        let mut request = [0; 8192];
-        let _ = stream.read(&mut request).await;
-        let body = json!({"code":"\u{1b}[31mprivate-source-value","demo":false}).to_string();
-        let response = format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
-        stream.write_all(response.as_bytes()).await.unwrap();
-    });
-    assert!(browser_launch::prepare(&root).await.is_err());
-    server.await.unwrap();
+    for body in [
+        json!({"demo":"\u{1b}[31mprivate-source-value"}).to_string(),
+        json!({"demo":false,"extra":"x".repeat(5000)}).to_string(),
+    ] {
+        let temp = TempDir::new().unwrap();
+        let root = Root::open(temp.path().join("state")).unwrap();
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        rhythm::local_access::Access::create(listener.local_addr().unwrap().port())
+            .unwrap()
+            .save(&root)
+            .unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0; 8192];
+            let _ = stream.read(&mut request).await;
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).await.unwrap();
+        });
+        assert!(browser_launch::prepare(&root).await.is_err());
+        server.await.unwrap();
+    }
 }
-
 #[test]
 fn demo_delivery_failure_drains_runtime_without_waiting_for_client_timeout() {
     let mut child = Command::new(env!("CARGO_BIN_EXE_rhythm"))

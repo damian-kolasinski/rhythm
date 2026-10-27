@@ -34,5 +34,23 @@ pub fn router() -> Router {
                 )
             }),
         )
+        .route(
+            "/assets/dm-sans.woff2",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "font/woff2")],
+                    include_bytes!("../web/dist/assets/dm-sans.woff2").as_slice(),
+                )
+            }),
+        )
+        .route(
+            "/assets/dm-sans-license.txt",
+            get(|| async {
+                (
+                    [(header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                    include_bytes!("../web/DM-Sans-OFL.txt").as_slice(),
+                )
+            }),
+        )
         .fallback(|| async { StatusCode::NOT_FOUND.into_response() })
 }

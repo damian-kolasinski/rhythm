@@ -1,3 +1,4 @@
+import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
@@ -10,46 +11,54 @@ test.afterEach(async () => {
   await runtime.stop();
 });
 
-test("pairing, tab reload, single-use code, disconnect, and expired session", async ({
+test("open the CLI URL directly, reload, and open another tab without pairing", async ({
   page,
+  browser,
 }) => {
-  const code = await runtime.code();
-  await page.goto(runtime.origin);
-  await page.getByLabel("Paste your single-use browser code").fill("invalid");
-  await page.getByRole("button", { name: "Connect to workspace" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "invalid, expired, or already used",
-  );
-  await page.getByLabel("Paste your single-use browser code").fill(code);
-  await page.getByRole("button", { name: "Connect to workspace" }).click();
+  const launch = await runtime.launch();
+  expect(Object.keys(launch).sort()).toEqual(["demo", "url"]);
+  const credentials: string[] = [];
+  page.on("request", (r) => {
+    if (r.headers().authorization) credentials.push(r.headers().authorization);
+  });
+  await page.goto(launch.url);
   await expect(
     page.getByRole("heading", { name: "Background work, in view." }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "New service", exact: true }),
+  ).toBeEnabled();
+  expect(
+    await page.evaluate(() => ({
+      session: sessionStorage.length,
+      local: localStorage.length,
+    })),
+  ).toEqual({ session: 0, local: 0 });
+  expect(await page.context().cookies()).toEqual([]);
+  expect(credentials).toEqual([]);
   await page.reload();
   await expect(
-    page.getByRole("heading", { name: "Background work, in view." }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Disconnect browser" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Good work keeps going." }),
-  ).toBeVisible();
-  await page.getByLabel("Paste your single-use browser code").fill(code);
-  await page.getByRole("button", { name: "Connect to workspace" }).click();
-  await expect(page.getByRole("alert")).toContainText(
-    "invalid, expired, or already used",
-  );
-  await runtime.connect(page);
-  await page.evaluate(async () => {
-    const s = JSON.parse(sessionStorage.getItem("rhythm.browser-session")!);
-    await fetch("/v1/browser/disconnect", {
+    page.getByRole("button", { name: "New schedule", exact: true }),
+  ).toBeEnabled();
+  const context = await browser.newContext();
+  try {
+    const second = await context.newPage();
+    await second.goto(launch.url);
+    await expect(
+      second.getByRole("button", { name: "New service", exact: true }),
+    ).toBeEnabled();
+  } finally {
+    await context.close();
+  }
+  const refused = await page.evaluate(async () => {
+    const r = await fetch("/v1/browser/command", {
       method: "POST",
-      headers: { Authorization: `Bearer ${s.token}` },
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ operation: "list" }),
     });
+    return r.status;
   });
-  await page.getByRole("button", { name: "Refresh workspace" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Good work keeps going." }),
-  ).toBeVisible();
+  expect(refused).toBe(401);
 });
 
 test("create service, start, inspect literal logs, cancel restart, restart, and stop", async ({
@@ -433,4 +442,46 @@ test("detail failures stay retryable and accepted commands are not reported as f
   ).toBeEnabled();
   await confirm.getByRole("button", { name: "Keep as is" }).click();
   expect(errors).toEqual([]);
+});
+
+test("foreign browser origins cannot invoke local workload controls", async ({
+  page,
+}) => {
+  const server = createServer((_req, res) => {
+    res.writeHead(200, { "Content-Type": "text/html" });
+    res.end("<!doctype html><title>Untrusted origin fixture</title>");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string")
+      throw new Error("Fixture unavailable");
+    await page.goto(`http://127.0.0.1:${address.port}`);
+    const result = await page.evaluate(
+      async ({ origin, definition }) => {
+        try {
+          await fetch(`${origin}/v1/browser/command`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Rhythm-Client": "1",
+            },
+            body: JSON.stringify({ operation: "create", definition }),
+          });
+          return "allowed";
+        } catch {
+          return "blocked";
+        }
+      },
+      { origin: runtime.origin, definition: service("sample-cross-origin") },
+    );
+    expect(result).toBe("blocked");
+    expect(
+      (await runtime.command({ operation: "list" })).services,
+    ).toHaveLength(0);
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    );
+  }
 });

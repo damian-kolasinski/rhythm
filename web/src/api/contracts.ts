@@ -136,10 +136,7 @@ export const statusSchema = z.object({
   type: z.literal("runtime"),
   version: z.string(),
 });
-export const sessionSchema = z.object({
-  token: z.string().regex(/^[0-9a-f]{64}$/),
-  demo: z.boolean(),
-});
+export const workspaceInfoSchema = z.object({ demo: z.boolean() });
 export const createdSchema = z.object({
   type: z.literal("created"),
   id: z.string(),

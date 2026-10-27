@@ -25,7 +25,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Open the local web UI and deliver a single-use browser code.
+    /// Open the local web workspace.
     Ui {
         #[arg(long)]
         no_open: bool,

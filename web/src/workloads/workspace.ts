@@ -1,6 +1,6 @@
 import { createSignal, onCleanup, onMount } from "solid-js";
 import { createStore, reconcile } from "solid-js/store";
-import type { Api } from "../api/client";
+import { workspaceInfo, type Api } from "../api/client";
 import { errorMessage } from "../api/errors";
 import {
   serviceListSchema,
@@ -13,6 +13,7 @@ export type Snapshot = {
   services: Service[];
   schedules: Schedule[];
   version: string;
+  demo: boolean;
 };
 export function createWorkspace(api: Api) {
   const [state, setState] = createStore<{ snapshot?: Snapshot }>({});
@@ -23,13 +24,14 @@ export function createWorkspace(api: Api) {
   let disposed = false;
   async function load() {
     try {
-      const [services, schedules, status] = await Promise.all([
+      const [services, schedules, status, info] = await Promise.all([
         api({ operation: "list" }, serviceListSchema),
         api(
           { operation: "schedule", command: { operation: "list" } },
           scheduleListSchema,
         ),
         api({ operation: "status" }, statusSchema),
+        workspaceInfo(),
       ]);
       if (!disposed) {
         setState(
@@ -39,6 +41,7 @@ export function createWorkspace(api: Api) {
               services: services.services,
               schedules: schedules.response.schedules,
               version: status.version,
+              demo: info.demo,
             },
             { key: "id" },
           ),

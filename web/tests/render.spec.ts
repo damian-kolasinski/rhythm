@@ -120,7 +120,6 @@ for (const state of [
   "unsupported-response",
 ] as const) {
   test(`render ${state}`, async ({ page, context }) => {
-    await runtime.session(context);
     await page.addInitScript((value) => {
       Date.now = () => value;
     }, now);
@@ -164,7 +163,6 @@ for (const state of [
 test("render loading", async ({ page, context }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
-  await runtime.session(context);
   const requests: Route[] = [];
   await page.route("**/v1/browser/command", (route) => {
     requests.push(route);
@@ -177,13 +175,7 @@ test("render loading", async ({ page, context }) => {
   await expect(page).toHaveScreenshot("loading.png", { fullPage: true });
   for (const request of requests) await request.abort();
 });
-test("render login and mobile overview", async ({ page, context }) => {
-  await page.goto(runtime.origin);
-  await expect(
-    page.getByRole("heading", { name: "Good work keeps going." }),
-  ).toBeVisible();
-  await expect(page).toHaveScreenshot("login.png");
-  await runtime.session(context);
+test("render mobile overview", async ({ page }) => {
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
@@ -191,7 +183,7 @@ test("render login and mobile overview", async ({ page, context }) => {
     mock(r, standard.services, standard.schedules),
   );
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.reload();
+  await page.goto(runtime.origin);
   await expect(
     page.getByRole("link", { name: "Inspect sample-indexer" }),
   ).toBeVisible();
@@ -201,7 +193,6 @@ test("render uncertain cleanup and literal execution output", async ({
   page,
   context,
 }) => {
-  await runtime.session(context);
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
@@ -257,7 +248,6 @@ test("render service and schedule creation forms and mobile detail", async ({
   page,
   context,
 }) => {
-  await runtime.session(context);
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
@@ -290,3 +280,67 @@ test("render service and schedule creation forms and mobile detail", async ({
   );
   await expect(page).toHaveScreenshot("mobile-detail.png");
 });
+
+for (const theme of ["light", "dark"] as const) {
+  test(`mergegate appearance ${theme}`, async ({ page }) => {
+    await page.emulateMedia({ colorScheme: theme });
+    await page.addInitScript((value) => {
+      Date.now = () => value;
+    }, now);
+    await page.route("**/v1/browser/command", (r) =>
+      mock(r, standard.services, standard.schedules),
+    );
+    await page.goto(runtime.origin);
+    await expect(
+      page.getByRole("link", { name: "Inspect sample-indexer" }),
+    ).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    expect(
+      await page.evaluate(() => document.fonts.check('14px "DM Sans"')),
+    ).toBe(true);
+    const actual = await page.evaluate(() => ({
+      face: getComputedStyle(document.body).fontFamily,
+      page: getComputedStyle(document.documentElement).backgroundColor,
+      action: getComputedStyle(document.querySelector(".new-actions .primary")!)
+        .backgroundColor,
+    }));
+    expect(actual.face).toContain("DM Sans");
+    expect(actual.page).toBe(
+      theme === "light" ? "rgb(247, 252, 255)" : "rgb(34, 37, 38)",
+    );
+    expect(actual.action).toBe(
+      theme === "light" ? "rgb(0, 59, 102)" : "rgb(102, 191, 255)",
+    );
+    await expect(page).toHaveScreenshot(`appearance-${theme}.png`, {
+      fullPage: true,
+    });
+    if (theme === "dark") {
+      await page.getByRole("link", { name: "Inspect sample-export" }).click();
+      await expect(page.getByRole("dialog").locator(".status")).toHaveText(
+        "Failed",
+      );
+      await page
+        .getByRole("dialog")
+        .getByRole("button", { name: /View logs/ })
+        .first()
+        .click();
+      await expect(page.getByTestId("stdout")).toBeVisible();
+      expect(
+        await page
+          .getByTestId("stdout")
+          .evaluate((el) => getComputedStyle(el).fontFamily),
+      ).toContain("monospace");
+      await expect(page).toHaveScreenshot("dark-detail.png");
+      await page
+        .getByRole("dialog")
+        .getByRole("tab", { name: "Definition", exact: true })
+        .click();
+      expect(
+        await page
+          .locator(".definition-panel code")
+          .first()
+          .evaluate((el) => getComputedStyle(el).fontFamily),
+      ).toContain("monospace");
+    }
+  });
+}

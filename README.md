@@ -98,11 +98,12 @@ queueing, recovery, and CLI examples.
 
 ## Web workspace and demo
 
-Start the runtime, then run `rhythm ui` to open the workspace and obtain a
-single-use browser code. Browse services and schedules, create owned work,
+Start the runtime, then run `rhythm ui` to open the workspace directly.
+Browse services and schedules, create owned work,
 control execution, inspect history and output, and acknowledge investigated
-uncertain completions. Pair only a trusted browser: it can create and run
-commands with the account's permissions.
+uncertain completions. Like mergegate, the loopback workspace trusts local
+callers, including other OS accounts, to create/run commands with the runtime
+account's permissions.
 
 Run `rhythm demo` for disposable synthetic work using the real runtime.
 Ctrl-C stops the demo and removes its temporary state. Use `--no-open` with

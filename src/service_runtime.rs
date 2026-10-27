@@ -45,11 +45,7 @@ pub async fn run_presented(root: Root, executable: PathBuf, demo: bool) -> Resul
     let (tx, mut rx) = mpsc::channel::<Envelope>(64);
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
     let router = local_api::router(access.clone(), tx.clone())
-        .merge(crate::browser_api::router(
-            access.clone(),
-            crate::browser_access::BrowserAccess::new(demo),
-            tx.clone(),
-        ))
+        .merge(crate::browser_api::router(access.port, demo, tx.clone()))
         .merge(crate::web_assets::router())
         .layer(axum::middleware::from_fn_with_state(
             access.port,

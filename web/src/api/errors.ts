@@ -9,7 +9,7 @@ export function errorMessage(error: unknown): string {
     (
       {
         unauthorized:
-          "Your connection expired. Run rhythm ui to connect again.",
+          "The runtime refused this request. Open its local workspace URL and retry.",
         not_found:
           "This workload is no longer available. Refresh the workspace.",
         already_exists: "That name is already in use. Choose another name.",
