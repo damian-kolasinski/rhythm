@@ -1,0 +1,15 @@
+External launchd registrations (read-only, current user)
+
+STATE	KIND	LABEL	TRIGGERS
+running:42	service	a-service	at-load
+idle	schedule	b-interval	every 300s
+exit:1	schedule	c-weekly	calendar 09:00 month=* day=* weekday=06
+not-observed	on-demand	d-unobserved
+unknown	on-demand	e-unknown\u{1b}[2J
+
+5 registrations; snapshot partial.
+Warning: InvalidRegistration (/tmp/broken\n.plist)
+Warning: ObservationUnavailable
+Scope excludes system agents/daemons, cron, app-managed schedules, and unregistered processes.
+Observation covers the caller's launchd context; not-observed may be loaded in another domain.
+Idle/exit status describes a launcher; downstream completion needs separate evidence.
