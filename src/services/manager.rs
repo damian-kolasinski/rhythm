@@ -14,7 +14,7 @@ impl<S: ServiceStore, H: ExecutionHost> Manager<S, H> {
         let recovering = store
             .active()?
             .into_iter()
-            .map(|e| (e.service_id.clone(), e))
+            .map(|e| (e.owner.id().clone(), e))
             .collect();
         Ok(Self {
             store,
@@ -25,10 +25,8 @@ impl<S: ServiceStore, H: ExecutionHost> Manager<S, H> {
             shutdown: false,
         })
     }
-    pub fn shutdown_requested(&self) -> bool {
-        self.shutdown
-    }
     pub fn release(&mut self) {
+        self.shutdown = true;
         self.host.release()
     }
     pub fn quiescent(&self) -> bool {
@@ -84,7 +82,7 @@ impl<S: ServiceStore, H: ExecutionHost> Manager<S, H> {
             Request::Inspect { id } => {
                 let s = self.store.get(&id)?;
                 Ok(Response::Service {
-                    service: self.view(&s)?,
+                    service: Box::new(self.view(&s)?),
                     definition: s.definition,
                 })
             }
@@ -112,7 +110,7 @@ impl<S: ServiceStore, H: ExecutionHost> Manager<S, H> {
                 }
                 let s = self.store.get(&id)?;
                 Ok(Response::Service {
-                    service: self.view(&s)?,
+                    service: Box::new(self.view(&s)?),
                     definition: s.definition,
                 })
             }
@@ -120,20 +118,6 @@ impl<S: ServiceStore, H: ExecutionHost> Manager<S, H> {
                 self.store.get(&id)?;
                 Ok(Response::History {
                     executions: self.store.history(&id)?,
-                })
-            }
-            Request::Logs { execution_id } => {
-                self.store.execution(execution_id)?;
-                let (stdout, stderr) = self.host.logs(execution_id)?;
-                Ok(Response::Logs { stdout, stderr })
-            }
-            Request::Status => Ok(Response::Runtime {
-                version: env!("CARGO_PKG_VERSION").into(),
-            }),
-            Request::Shutdown => {
-                self.shutdown = true;
-                Ok(Response::Runtime {
-                    version: env!("CARGO_PKG_VERSION").into(),
                 })
             }
         }
@@ -158,14 +142,22 @@ impl<S: ServiceStore, H: ExecutionHost> Manager<S, H> {
             self.host.stop(*run)?;
         }
         Ok(Response::Service {
-            service: self.view(&self.store.get(&id)?)?,
+            service: Box::new(self.view(&self.store.get(&id)?)?),
             definition: self.store.get(&id)?.definition,
         })
     }
     pub fn tick(&mut self) -> Result<()> {
         let now = timestamp_ms();
         for (id, e) in self.recovering.clone() {
-            if let Some(c) = self.host.recover(&e)? {
+            let completion = match self.host.recover(&e)? {
+                Recovery::Waiting => None,
+                Recovery::NeverAttempted => Some(Completion {
+                    outcome: Outcome::Interrupted,
+                    finished_at_ms: now,
+                }),
+                Recovery::Completed(c) => Some(c),
+            };
+            if let Some(c) = completion {
                 self.store.finish(e.id, &c)?;
                 self.recovering.remove(&id);
                 if c.outcome.requires_attention() {
@@ -240,7 +232,7 @@ impl<S: ServiceStore, H: ExecutionHost> Manager<S, H> {
                 continue;
             }
             let run = self.store.begin(&id, now)?;
-            match self.host.start(run, &s.definition) {
+            match self.host.start(run, s.definition.command_spec()) {
                 Ok(pid) => {
                     self.store.started(run, pid)?;
                     self.active.insert(id, (run, pid));

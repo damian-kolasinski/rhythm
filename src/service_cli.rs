@@ -1,7 +1,13 @@
 //! Noninteractive service commands. All operations go through the runtime API.
-use crate::{local_api, private_storage::Root, service_runtime, services::*};
+use crate::{
+    local_api,
+    private_storage::Root,
+    runtime_protocol::{Request as RuntimeRequest, Response as RuntimeResponse},
+    service_runtime,
+    services::*,
+};
 use clap::Subcommand;
-use std::{io::Read, os::unix::fs::OpenOptionsExt, path::PathBuf};
+use std::path::PathBuf;
 
 #[derive(Subcommand)]
 pub enum RuntimeCommand {
@@ -62,7 +68,7 @@ pub fn root(data_dir: Option<PathBuf>) -> Result<Root> {
     };
     Root::open(path)
 }
-pub async fn runtime(command: RuntimeCommand, root: Root) -> Result<Response> {
+pub async fn runtime(command: RuntimeCommand, root: Root) -> Result<RuntimeResponse> {
     match command {
         RuntimeCommand::Run => {
             service_runtime::run(
@@ -70,11 +76,11 @@ pub async fn runtime(command: RuntimeCommand, root: Root) -> Result<Response> {
                 std::env::current_exe().map_err(|_| Error::ExecutionUnavailable)?,
             )
             .await?;
-            Ok(Response::Runtime {
+            Ok(RuntimeResponse::Runtime {
                 version: env!("CARGO_PKG_VERSION").into(),
             })
         }
-        RuntimeCommand::Status => local_api::call(&root, &Request::Status).await,
+        RuntimeCommand::Status => local_api::call(&root, &RuntimeRequest::Status).await,
         RuntimeCommand::Stop => {
             if cfg!(target_os = "macos") {
                 crate::launchd_runtime::LaunchdRuntime::current_user()?.uninstall(root.path())?;
@@ -86,28 +92,28 @@ pub async fn runtime(command: RuntimeCommand, root: Root) -> Result<Response> {
                 &std::env::current_exe().map_err(|_| Error::ExecutionUnavailable)?,
                 root.path(),
             )?;
-            Ok(Response::Runtime {
+            Ok(RuntimeResponse::Runtime {
                 version: env!("CARGO_PKG_VERSION").into(),
             })
         }
         RuntimeCommand::Uninstall => {
             crate::launchd_runtime::LaunchdRuntime::current_user()?.uninstall(root.path())?;
-            Ok(Response::Runtime {
+            Ok(RuntimeResponse::Runtime {
                 version: env!("CARGO_PKG_VERSION").into(),
             })
         }
     }
 }
 /// A removed registration does not prove that a foreground runtime has exited.
-pub async fn stop_foreground(root: &Root) -> Result<Response> {
-    match local_api::call(root, &Request::Shutdown).await {
+pub async fn stop_foreground(root: &Root) -> Result<RuntimeResponse> {
+    match local_api::call(root, &RuntimeRequest::Shutdown).await {
         Ok(_) | Err(Error::RuntimeUnavailable) => {}
         Err(e) => return Err(e),
     }
     for _ in 0..250 {
         match root.lock() {
             Ok(_) => {
-                return Ok(Response::Runtime {
+                return Ok(RuntimeResponse::Runtime {
                     version: env!("CARGO_PKG_VERSION").into(),
                 });
             }
@@ -119,28 +125,11 @@ pub async fn stop_foreground(root: &Root) -> Result<Response> {
     }
     Err(Error::RuntimeUnavailable)
 }
-pub async fn service(command: ServiceCommand, root: Root) -> Result<Response> {
+pub async fn service(command: ServiceCommand, root: Root) -> Result<RuntimeResponse> {
     let request = match command {
-        ServiceCommand::Create { file } => {
-            let f = std::fs::OpenOptions::new()
-                .read(true)
-                .custom_flags(libc::O_NONBLOCK)
-                .open(file)
-                .map_err(|_| Error::InvalidRequest)?;
-            if !f.metadata().map_err(|_| Error::InvalidRequest)?.is_file() {
-                return Err(Error::InvalidRequest);
-            }
-            let mut bytes = vec![];
-            f.take(131073)
-                .read_to_end(&mut bytes)
-                .map_err(|_| Error::InvalidRequest)?;
-            if bytes.len() > 131072 {
-                return Err(Error::InvalidRequest);
-            }
-            Request::Create {
-                definition: serde_json::from_slice(&bytes).map_err(|_| Error::InvalidRequest)?,
-            }
-        }
+        ServiceCommand::Create { file } => Request::Create {
+            definition: crate::definition_file::read(&file)?,
+        },
         ServiceCommand::List => Request::List,
         ServiceCommand::Inspect { id } => Request::Inspect { id },
         ServiceCommand::Start { id } => Request::Start { id },
@@ -160,7 +149,11 @@ pub async fn service(command: ServiceCommand, root: Root) -> Result<Response> {
             }
         }
         ServiceCommand::History { id } => Request::History { id },
-        ServiceCommand::Logs { execution_id } => Request::Logs { execution_id },
+        ServiceCommand::Logs { execution_id } => {
+            return local_api::call(&root, &RuntimeRequest::Logs { execution_id }).await;
+        }
     };
-    local_api::call(&root, &request).await
+    local_api::call(&root, &request)
+        .await
+        .map(RuntimeResponse::Service)
 }

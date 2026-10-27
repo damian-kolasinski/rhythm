@@ -1,69 +1,17 @@
 //! SQLite adapter. Only the runtime opens the store while holding its singleton lock.
-use crate::{
-    private_storage::{Root, private_file},
-    services::*,
-};
+use crate::{private_storage::Root, services::*};
 use rusqlite::{Connection, params};
 
 pub struct SqliteStore(Connection);
 impl SqliteStore {
     pub fn open(root: &Root) -> Result<Self> {
-        private_file(&root.path().join("state.sqlite"))?;
-        let c = Connection::open(root.path().join("state.sqlite"))
-            .map_err(|_| Error::StorageUnavailable)?;
-        let version: i64 = c
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .map_err(|_| Error::StorageUnavailable)?;
-        if version > 1 {
-            return Err(Error::StorageUnavailable);
-        }
-        c.execute_batch("PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
-        CREATE TABLE IF NOT EXISTS services(id TEXT PRIMARY KEY,definition TEXT NOT NULL,desired TEXT NOT NULL,pending_start INTEGER NOT NULL DEFAULT 0);
-        CREATE TABLE IF NOT EXISTS executions(id INTEGER PRIMARY KEY AUTOINCREMENT,service_id TEXT NOT NULL REFERENCES services(id),started_at_ms INTEGER NOT NULL,finished_at_ms INTEGER,outcome TEXT,supervisor_pid INTEGER,recovery_acknowledged_at_ms INTEGER);
-        CREATE UNIQUE INDEX IF NOT EXISTS one_active_execution ON executions(service_id) WHERE finished_at_ms IS NULL;
-        PRAGMA user_version=1;").map_err(|_|Error::StorageUnavailable)?;
-        Ok(Self(c))
+        Ok(Self(crate::database::open(root)?))
     }
     fn runs(&self, sql: &str, value: rusqlite::types::Value) -> Result<Vec<Execution>> {
-        let mut stmt = self.0.prepare(sql).map_err(|_| Error::StorageUnavailable)?;
-        let rows = stmt
-            .query_map([value], |r| {
-                Ok((
-                    r.get::<_, i64>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get(2)?,
-                    r.get(3)?,
-                    r.get::<_, Option<String>>(4)?,
-                    r.get(5)?,
-                    r.get(6)?,
-                ))
-            })
-            .map_err(|_| Error::StorageUnavailable)?;
-        rows.map(|r| {
-            let (
-                id,
-                service,
-                started_at_ms,
-                finished_at_ms,
-                outcome,
-                supervisor_pid,
-                recovery_acknowledged_at_ms,
-            ) = r.map_err(|_| Error::StorageUnavailable)?;
-            Ok(Execution {
-                id,
-                service_id: ServiceId::try_from(service).map_err(|_| Error::StorageUnavailable)?,
-                started_at_ms,
-                finished_at_ms,
-                outcome: outcome
-                    .map(|s| serde_json::from_str(&s).map_err(|_| Error::StorageUnavailable))
-                    .transpose()?,
-                supervisor_pid,
-                recovery_acknowledged_at_ms,
-            })
-        })
-        .collect()
+        crate::execution_storage::read(&self.0, sql, value)
     }
 }
+
 impl ServiceStore for SqliteStore {
     fn create(&mut self, d: &Definition) -> Result<()> {
         let result = self.0.execute(
@@ -158,17 +106,10 @@ impl ServiceStore for SqliteStore {
         Ok(())
     }
     fn started(&mut self, id: i64, pid: u32) -> Result<()> {
-        self.0
-            .execute(
-                "UPDATE executions SET supervisor_pid=?1 WHERE id=?2",
-                params![pid, id],
-            )
-            .map_err(|_| Error::StorageUnavailable)?;
-        Ok(())
+        crate::execution_storage::started(&self.0, id, pid)
     }
     fn finish(&mut self, id: i64, c: &Completion) -> Result<()> {
-        self.0.execute("UPDATE executions SET outcome=?1,finished_at_ms=?2 WHERE id=?3 AND finished_at_ms IS NULL",params![serde_json::to_string(&c.outcome).unwrap(),c.finished_at_ms,id]).map_err(|_|Error::StorageUnavailable)?;
-        Ok(())
+        crate::execution_storage::finish(&self.0, id, c)
     }
     fn history(&self, id: &ServiceId) -> Result<Vec<Execution>> {
         self.runs(
@@ -191,14 +132,8 @@ impl ServiceStore for SqliteStore {
     }
     fn active(&self) -> Result<Vec<Execution>> {
         self.runs(
-            "SELECT * FROM executions WHERE finished_at_ms IS NULL AND ?1=1",
+            "SELECT * FROM executions WHERE service_id IS NOT NULL AND finished_at_ms IS NULL AND ?1=1",
             1.into(),
         )
-    }
-    fn execution(&self, id: i64) -> Result<Execution> {
-        self.runs("SELECT * FROM executions WHERE id=?1", id.into())?
-            .into_iter()
-            .next()
-            .ok_or(Error::NotFound)
     }
 }

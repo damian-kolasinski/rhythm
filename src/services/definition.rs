@@ -1,44 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::{
-    fmt,
-    path::{Path, PathBuf},
-};
+use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct ServiceId(String);
-impl std::str::FromStr for ServiceId {
-    type Err = &'static str;
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        Self::try_from(value.to_owned())
-    }
-}
-
-impl TryFrom<String> for ServiceId {
-    type Error = &'static str;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.is_empty()
-            || value.len() > 63
-            || !value.as_bytes()[0].is_ascii_lowercase()
-            || !value
-                .bytes()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-' || c == b'_')
-        {
-            return Err("invalid_service_id");
-        }
-        Ok(Self(value))
-    }
-}
-impl From<ServiceId> for String {
-    fn from(id: ServiceId) -> String {
-        id.0
-    }
-}
-impl fmt::Display for ServiceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
+pub use crate::workload_id::WorkloadId as ServiceId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -52,8 +15,8 @@ pub enum Restart {
 #[serde(try_from = "DefinitionInput")]
 pub struct Definition {
     id: ServiceId,
-    command: Vec<String>,
-    working_directory: PathBuf,
+    #[serde(flatten)]
+    command_spec: crate::execution_command::CommandSpec,
     restart: Restart,
     restart_delay_ms: u64,
 }
@@ -74,24 +37,14 @@ fn default_delay() -> u64 {
 impl TryFrom<DefinitionInput> for Definition {
     type Error = &'static str;
     fn try_from(v: DefinitionInput) -> Result<Self, Self::Error> {
-        if v.command.is_empty()
-            || v.command.len() > 256
-            || !Path::new(&v.command[0]).is_absolute()
-            || v.command.iter().any(|s| s.contains('\0'))
-            || v.command.iter().map(String::len).sum::<usize>() > 65536
-            || !v.working_directory.is_absolute()
-            || v.working_directory
-                .as_os_str()
-                .as_encoded_bytes()
-                .contains(&0)
-            || !(100..=60000).contains(&v.restart_delay_ms)
-        {
+        if !(100..=60000).contains(&v.restart_delay_ms) {
             return Err("invalid_definition");
         }
+        let command_spec =
+            crate::execution_command::CommandSpec::new(v.command, v.working_directory)?;
         Ok(Self {
             id: v.id,
-            command: v.command,
-            working_directory: v.working_directory,
+            command_spec,
             restart: v.restart,
             restart_delay_ms: v.restart_delay_ms,
         })
@@ -102,10 +55,13 @@ impl Definition {
         &self.id
     }
     pub fn command(&self) -> &[String] {
-        &self.command
+        self.command_spec.command()
     }
     pub fn working_directory(&self) -> &Path {
-        &self.working_directory
+        self.command_spec.working_directory()
+    }
+    pub fn command_spec(&self) -> &crate::execution_command::CommandSpec {
+        &self.command_spec
     }
     pub fn restart(&self) -> Restart {
         self.restart

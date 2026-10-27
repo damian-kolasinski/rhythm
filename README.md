@@ -7,7 +7,7 @@ cutover plan. Machine inventory is private and must not be committed or publishe
 
 Rhythm currently provides read-only discovery of the current user's
 `~/Library/LaunchAgents` registrations on macOS and a local runtime for
-Rhythm-owned services. Scheduling and the web UI follow in separate slices.
+Rhythm-owned services and persisted schedules. The web UI follows separately.
 Discovery does not install, start, stop, import, or modify any workload.
 
 ## Run
@@ -87,6 +87,15 @@ registration while preserving state and logs. Versioned distribution follows
 in a later slice. See [docs/services.md](docs/services.md) for execution,
 recovery, privacy, and API contracts.
 
+## Persisted schedules
+
+Schedules support interval, daily, and weekly triggers with explicit overlap
+and missed-run policies. They start paused and share service execution IDs,
+private logs, and crash recovery. Use `schedule create --file FILE`, `run-now`,
+`resume`, `pause`, `cancel`, `list`, `inspect`, `history`, and `logs`.
+See [docs/schedules.md](docs/schedules.md) for definitions, timezone/DST rules,
+queueing, recovery, and CLI examples.
+
 ## Verify
 
 ```sh
@@ -107,7 +116,9 @@ Owned-service tests use real processes, SQLite, loopback HTTP, private temporary
 storage, and synthetic workloads. They cover cancellation and descendant
 cleanup, restart throttling, runtime crashes, uncertain monitor loss, explicit
 cleanup acknowledgment, credentials, inherited ACLs, bounded output, and
-concurrent shutdown. Launchd adapter tests fake only the external command.
+concurrent shutdown. Schedule tests additionally verify persisted cursors,
+calendar dispatch, overlap/missed policies, queueing across interruptions, and
+schema migration. Launchd adapter tests fake only the external command.
 
 ## Code review
 

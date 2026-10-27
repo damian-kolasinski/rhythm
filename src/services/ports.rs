@@ -18,15 +18,4 @@ pub trait ServiceStore {
     fn acknowledge(&mut self, id: ExecutionId, now: i64) -> Result<()>;
     fn history(&self, id: &ServiceId) -> Result<Vec<Execution>>;
     fn active(&self) -> Result<Vec<Execution>>;
-    fn execution(&self, id: ExecutionId) -> Result<Execution>;
-}
-
-/// A host owns process containment, cancellation and durable completion evidence.
-pub trait ExecutionHost {
-    fn start(&mut self, id: ExecutionId, definition: &Definition) -> Result<u32>;
-    fn stop(&mut self, id: ExecutionId) -> Result<()>;
-    fn poll(&mut self, id: ExecutionId) -> Result<Option<Completion>>;
-    fn recover(&mut self, execution: &Execution) -> Result<Option<Completion>>;
-    fn logs(&self, id: ExecutionId) -> Result<(String, String)>;
-    fn release(&mut self);
 }
