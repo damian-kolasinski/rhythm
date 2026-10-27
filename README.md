@@ -10,6 +10,14 @@ Rhythm currently provides read-only discovery of the current user's
 Rhythm-owned services and persisted schedules, with an embedded web workspace.
 Discovery does not install, start, stop, import, or modify any workload.
 
+## Install
+
+Versioned releases use mise's packslip backend, which verifies the signed release
+and selected archive before installation. See [docs/distribution.md](docs/distribution.md)
+for exact-version installation, private-repository credentials, the supported
+release target, and verification. Releases publish from version tags on reviewed
+commits, following Mergegate’s release flow.
+
 ## Run
 
 Install the Rust toolchain specified in `rust-toolchain.toml`, then:
@@ -83,8 +91,7 @@ On macOS, `runtime install` registers the current executable under the logged-in
 user's GUI launchd domain; `runtime status` checks the authenticated API.
 Use an executable at a stable location. `runtime stop` removes supervision and
 waits for the runtime to release its lock. `runtime uninstall` removes the
-registration while preserving state and logs. Versioned distribution follows
-in a later slice. See [docs/services.md](docs/services.md) for execution,
+registration while preserving state and logs. Versioned distribution uses mise and packslip; see [docs/distribution.md](docs/distribution.md). See [docs/services.md](docs/services.md) for execution,
 recovery, privacy, and API contracts.
 
 ## Persisted schedules
@@ -109,7 +116,7 @@ Run `rhythm demo` for disposable synthetic work using the real runtime.
 Ctrl-C stops the demo and removes its temporary state. Use `--no-open` with
 `ui` or `demo` to launch the browser manually. See [docs/web-ui.md](docs/web-ui.md)
 for browser trust, build steps, E2E tests, and demo recording instructions.
-Versioned mise/packslip distribution and installed-runtime cutover follow next.
+Distribution builds and verifies signed releases through mise/packslip; installed-runtime cutover remains a separate step.
 
 ## Verify
 

@@ -24,3 +24,6 @@ tempfile = "3.27.0"
 
 [lints.clippy]
 all = "warn"
+
+[profile.release]
+strip = "debuginfo"

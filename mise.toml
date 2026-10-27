@@ -1,0 +1,47 @@
+min_version = "2026.10.11"
+
+[tools]
+node = "22.19.0"
+pnpm = "10.12.4"
+python = "3.14.3"
+rust = "1.99.0"
+"github:jdx/packslip" = "1.11.1"
+"github:rhysd/actionlint" = "1.7.12"
+ruff = "0.17.3"
+
+[tasks."web:install"]
+run = "CI=true pnpm --dir web install --frozen-lockfile"
+
+[tasks."web:build"]
+depends = ["web:install"]
+run = "pnpm --dir web build"
+
+[tasks.build]
+depends = ["web:build"]
+run = "cargo build --locked"
+
+[tasks.check]
+depends = ["web:build"]
+run = [
+  "cargo fmt --check",
+  "cargo clippy --locked --all-targets -- -D warnings",
+  "pnpm --dir web exec prettier --check src tests '*.ts' '*.json' index.html",
+  "actionlint",
+  "ruff check distribution",
+  "ruff format --check distribution",
+  "python -m unittest discover -s distribution -p 'test_*.py'",
+]
+
+[tasks.test]
+depends = ["build"]
+run = ["cargo test --locked", "pnpm --dir web test"]
+
+[tasks."dist:build"]
+depends = ["web:build"]
+run = "python distribution/package.py --build"
+
+[tasks."dist:check"]
+run = "python -m unittest discover -s distribution -p 'test_*.py'"
+
+[tasks."dist:rehearse"]
+run = "python distribution/rehearsal.py --browser"

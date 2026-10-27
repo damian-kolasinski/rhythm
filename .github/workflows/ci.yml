@@ -8,17 +8,26 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
-  discovery:
+  runtime:
     strategy:
       matrix:
         os: [macos-15, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    env:
+      MISE_GITHUB_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - run: rustup toolchain install --profile minimal --component rustfmt,clippy
-      - run: cargo fmt --check
+      - uses: jdx/mise-action@5228313ee0372e111a38da051671ca30fc5a96db # v3
+        with:
+          version: 2026.10.11
+          cache: false
+      - run: mise run check
+      - run: git diff --exit-code -- web/dist
       - run: cargo test --locked
-      - run: cargo clippy --locked --all-targets -- -D warnings
