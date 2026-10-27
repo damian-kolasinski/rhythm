@@ -1,22 +1,24 @@
-//! Loopback HTTP transport, with private-file credentials and no browser access yet.
+//! CLI loopback transport, using private-file credentials and rejecting browser origins.
 use crate::{
+    http_authorization, http_response,
     local_access::Access,
     operation_error::{Error, Result},
     private_storage::Root,
-    runtime_protocol::{Command, Request, Response},
+    runtime_mailbox,
+    runtime_protocol::{Command, Request},
 };
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request as HttpRequest, State, rejection::JsonRejection},
     http::{HeaderMap, StatusCode},
     middleware::{self, Next},
-    response::{IntoResponse, Response as HttpResponse},
+    response::Response as HttpResponse,
     routing::post,
 };
 use serde::Deserialize;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
 
-pub type Envelope = (Request, oneshot::Sender<Result<Response>>);
+pub use crate::runtime_mailbox::Envelope;
 #[derive(Clone)]
 struct ApiState {
     access: Access,
@@ -30,20 +32,11 @@ pub fn router(access: Access, commands: mpsc::Sender<Envelope>) -> Router {
         .layer(middleware::from_fn_with_state(state.clone(), authorize))
         .with_state(state)
 }
-fn api_error(status: StatusCode, error: Error) -> HttpResponse {
-    (status, Json(serde_json::json!({"error":{"code":error}}))).into_response()
-}
 fn authorized(headers: &HeaderMap, access: &Access) -> bool {
-    if headers.contains_key("origin")
-        || headers.get("host").and_then(|h| h.to_str().ok())
-            != Some(format!("127.0.0.1:{}", access.port).as_str())
-    {
-        return false;
-    }
-    let Some(actual) = headers.get("authorization").map(|h| h.as_bytes()) else {
-        return false;
-    };
-    access.accepts(actual)
+    http_authorization::cli_origin(headers, access.port)
+        && headers
+            .get("authorization")
+            .is_some_and(|h| access.accepts(h.as_bytes()))
 }
 async fn authorize(
     State(state): State<ApiState>,
@@ -51,7 +44,7 @@ async fn authorize(
     next: Next,
 ) -> HttpResponse {
     if !authorized(request.headers(), &state.access) {
-        return api_error(StatusCode::UNAUTHORIZED, Error::Unauthorized);
+        return http_response::error(StatusCode::UNAUTHORIZED, Error::Unauthorized);
     }
     next.run(request).await
 }
@@ -60,28 +53,11 @@ async fn handle(
     body: std::result::Result<Json<Request>, JsonRejection>,
 ) -> HttpResponse {
     let Ok(Json(request)) = body else {
-        return api_error(StatusCode::BAD_REQUEST, Error::InvalidRequest);
+        return http_response::error(StatusCode::BAD_REQUEST, Error::InvalidRequest);
     };
-    let (tx, rx) = oneshot::channel();
-    if state.commands.send((request, tx)).await.is_err() {
-        return api_error(StatusCode::SERVICE_UNAVAILABLE, Error::RuntimeUnavailable);
-    }
-    match rx.await {
-        Ok(Ok(response)) => Json(response).into_response(),
-        Ok(Err(error)) => api_error(
-            match error {
-                Error::NotFound => StatusCode::NOT_FOUND,
-                Error::AlreadyExists | Error::RecoveryRequired | Error::Busy => {
-                    StatusCode::CONFLICT
-                }
-                Error::InvalidRequest => StatusCode::BAD_REQUEST,
-                _ => StatusCode::INTERNAL_SERVER_ERROR,
-            },
-            error,
-        ),
-        Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, Error::RuntimeUnavailable),
-    }
+    http_response::result(runtime_mailbox::invoke(&state.commands, request).await)
 }
+
 pub async fn call<C: Command>(root: &Root, request: &C) -> Result<C::Response> {
     let access = Access::read(root)?;
     let client = reqwest::Client::builder()

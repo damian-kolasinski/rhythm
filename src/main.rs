@@ -25,6 +25,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Open the local web workspace.
+    Ui {
+        #[arg(long)]
+        no_open: bool,
+    },
+    /// Run a disposable demo with synthetic work until interrupted.
+    Demo {
+        #[arg(long)]
+        no_open: bool,
+    },
     /// Inspect the current user's launchd registrations without changing them.
     Discover,
     /// Run or inspect the shared local runtime.
@@ -73,6 +83,22 @@ async fn main() -> ExitCode {
         }
     };
     match cli.command {
+        Commands::Ui { no_open } => {
+            let result = async {
+                let root = service_cli::root(cli.data_dir)?;
+                let launch = rhythm::browser_launch::prepare(&root).await?;
+                rhythm::browser_launch::deliver(&launch, cli.json, no_open)
+            }
+            .await;
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => failure(cli.json, &error.to_string(), &error.to_string()),
+            }
+        }
+        Commands::Demo { no_open } => match rhythm::demo::run(cli.json, no_open).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => failure(cli.json, &error.to_string(), &error.to_string()),
+        },
         Commands::Discover => discover(cli.json),
         Commands::Monitor { fd } => match rhythm::execution::run_monitor(fd).await {
             Ok(()) => ExitCode::SUCCESS,

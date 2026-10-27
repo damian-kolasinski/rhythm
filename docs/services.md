@@ -83,7 +83,7 @@ The runtime binds an ephemeral IPv4 loopback port. CLI requests use
 `POST /v1/command` with a tagged `operation` and a bearer credential read from
 private `access.json`. A new credential is generated each runtime start; it
 never appears in URLs. HTTP requires the exact loopback Host and rejects Origin
-headers. Browser access is deferred to the UI slice. JSON request bodies are
+headers. Browser access follows the trusted-loopback model with Host/Origin/client-header checks; see [web-ui.md](web-ui.md). JSON request bodies are
 limited to 128 KiB. Transport errors and invalid input produce stable error
 codes without echoing source values, paths, credentials, or OS diagnostics.
 Owned-service CLI failures exit 1; successful operations exit 0.

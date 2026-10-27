@@ -132,9 +132,9 @@ existing service definitions, desired state, execution IDs, history, and recover
 acknowledgments. A newer unsupported schema is refused. Older binaries cannot
 open schema 2; retain a private pre-upgrade backup when planning a rollback.
 
-Schedules use the existing authenticated loopback API, credential storage,
-Origin/Host restrictions, private permissions and ACL checks, and bounded
-definition-file reads. API requests use the shared envelope, for example:
+Schedules share the authenticated CLI API and the trusted-loopback browser API
+described in [web-ui.md](web-ui.md), along with private permissions, ACL checks,
+and bounded definition-file reads. Both use the shared request envelope:
 
 ```json
 { "operation": "schedule", "command": { "operation": "run_now", "id": "sample-report" } }

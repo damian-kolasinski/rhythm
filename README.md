@@ -7,7 +7,7 @@ cutover plan. Machine inventory is private and must not be committed or publishe
 
 Rhythm currently provides read-only discovery of the current user's
 `~/Library/LaunchAgents` registrations on macOS and a local runtime for
-Rhythm-owned services and persisted schedules. The web UI follows separately.
+Rhythm-owned services and persisted schedules, with an embedded web workspace.
 Discovery does not install, start, stop, import, or modify any workload.
 
 ## Run
@@ -96,12 +96,33 @@ private logs, and crash recovery. Use `schedule create --file FILE`, `run-now`,
 See [docs/schedules.md](docs/schedules.md) for definitions, timezone/DST rules,
 queueing, recovery, and CLI examples.
 
+## Web workspace and demo
+
+Start the runtime, then run `rhythm ui` to open the workspace directly.
+Browse services and schedules, create owned work,
+control execution, inspect history and output, and acknowledge investigated
+uncertain completions. Like mergegate, the loopback workspace trusts local
+callers, including other OS accounts, to create/run commands with the runtime
+account's permissions.
+
+Run `rhythm demo` for disposable synthetic work using the real runtime.
+Ctrl-C stops the demo and removes its temporary state. Use `--no-open` with
+`ui` or `demo` to launch the browser manually. See [docs/web-ui.md](docs/web-ui.md)
+for browser trust, build steps, E2E tests, and demo recording instructions.
+Versioned mise/packslip distribution and installed-runtime cutover follow next.
+
 ## Verify
 
 ```sh
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
+# Rebuild frontend assets before rebuilding the embedded binary
+pnpm --dir web install --frozen-lockfile
+pnpm --dir web build
+cargo build --locked
+pnpm --dir web exec playwright install chromium
+pnpm --dir web test
 # macOS GUI session: installs and removes one disposable registration
 cargo test --locked --test services launchd_install_cli_service_and_stop_are_verified_end_to_end -- --ignored
 ```

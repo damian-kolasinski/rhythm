@@ -17,6 +17,9 @@ use tokio::{
 };
 
 pub async fn run(root: Root, executable: PathBuf) -> Result<()> {
+    run_presented(root, executable, false).await
+}
+pub async fn run_presented(root: Root, executable: PathBuf, demo: bool) -> Result<()> {
     let _lock = root.lock()?;
     let store = SqliteStore::open(&root)?;
     let executions = crate::execution_reader::SqliteExecutionReader::open(&root)?;
@@ -41,8 +44,15 @@ pub async fn run(root: Root, executable: PathBuf) -> Result<()> {
     access.save(&root)?;
     let (tx, mut rx) = mpsc::channel::<Envelope>(64);
     let (shutdown_tx, mut shutdown_rx) = watch::channel(false);
+    let router = local_api::router(access.clone(), tx.clone())
+        .merge(crate::browser_api::router(access.port, demo, tx.clone()))
+        .merge(crate::web_assets::router())
+        .layer(axum::middleware::from_fn_with_state(
+            access.port,
+            crate::web_security::enforce,
+        ));
     let server = tokio::spawn(
-        axum::serve(listener, local_api::router(access.clone(), tx.clone()))
+        axum::serve(listener, router)
             .with_graceful_shutdown(async move {
                 let _ = shutdown_rx.wait_for(|done| *done).await;
             })
