@@ -1,0 +1,149 @@
+# Distribution
+
+Rhythm uses mise for pinned development tools and for installing signed
+packslip releases. The initial release target is `aarch64-apple-darwin`, with
+macOS 13 or newer. The release job builds and tests that target natively.
+Other release targets require their own native verification before being added.
+Source runtime checks still run on macOS and Linux.
+
+## Install a release
+
+From this repository, with mise installed and GitHub access configured:
+
+```sh
+repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+mise use -g "packslip:github.com/$repository@0.1.0"
+rhythm --version
+rhythm demo
+```
+
+Or replace `OWNER/REPOSITORY` in `mise use -g
+packslip:github.com/OWNER/REPOSITORY@0.1.0` with the repository you trust.
+An exact version avoids ambiguity about which release is installed. A private
+repository needs a GitHub token with read access, such as mise's existing gh
+credential integration or `MISE_GITHUB_TOKEN`. Do not put credentials in
+configuration, URLs, scripts, or review artifacts.
+
+The packslip backend verifies the repository identity, signed manifest, requested
+version, artifact digest and size before extracting anything. Its first install
+records the signer; later installations enforce continuity. Use a project
+`mise.toml` plus `mise lock` to carry the signer and artifact commitments between
+environments. A failed verification is a failed install: do not replace the
+`packslip:` backend with an unverified download or a local build.
+
+The archive contains the executable at its root, a short README, and the bundled
+font license. The UI, font, and license endpoint are embedded in the executable;
+Node, pnpm, a source checkout, and the packslip CLI are not runtime dependencies.
+
+## Development tasks
+
+The repository pins Node, pnpm, Python, Rust, packslip, actionlint, and Ruff.
+`mise.lock` records available downloads/checksums for the development CI platforms;
+Rust uses rustup's exact toolchain version from the matching toolchain file.
+
+```sh
+mise trust mise.toml
+mise install --locked
+mise run check
+mise run test
+mise run dist:build
+mise run dist:rehearse
+```
+
+`check` builds and checks the frontend, runs Rust formatting/lints, validates
+workflows, and checks/tests the distribution scripts. `test` builds the debug
+runtime, runs Rust tests, then browser tests. `dist:build` rebuilds the frontend,
+creates an optimized native executable, and writes the versioned archive to
+`dist/`. Build and browser execution are sequential; do not relink an executable
+while its real-process tests are active.
+
+Packaging refuses a target that cannot be tested natively, an executable reporting
+a different version, or an executable containing the builder's private home
+path. Rust paths are remapped and debug information is stripped. Archive entries
+have fixed names, modes, owner IDs, and timestamps; there are no local usernames,
+extended attributes, working directories, or inventory records in the archive.
+This makes packaging deterministic for the same executable; it is not a claim
+that compiler output is reproducible across toolchains or hosts.
+
+## Release policy and CI
+
+A reviewed merge to `main` starts the Release workflow. If `Cargo.toml` names an
+unpublished version, the workflow:
+
+1. Checks whether that version is already published and refuses partial draft
+   releases or a pre-existing tag pointing at another commit.
+2. Installs pinned tools without caches, rebuilds the UI, runs checks and Rust
+   tests, and builds/packages the native release. CI rejects stale committed UI
+   assets after rebuilding them.
+3. Signs a disposable candidate with an unlogged temporary test key. It verifies
+   the archive, rejects a modified file and a different signer, extracts into a
+   temporary installation, and runs real CLI/persistence/HTTP and browser flows
+   using that exact executable.
+4. Signs the built archive with packslip using the signing job's GitHub OIDC
+   identity. Keyless signatures are logged. The signing job has no repository
+   write permission. Public repositories also request GitHub build attestations;
+   private repositories skip that separate Enterprise-only service while keeping
+   packslip signature and artifact verification mandatory.
+5. Publishes the archive and `packslip.sigstore.json` together under `vVERSION`
+   using a separate job with repository write permission and no OIDC permission.
+   The tag points to the reviewed source commit. Existing release assets are
+   never overwritten.
+   SemVer prereleases are marked as prereleases rather than stable releases.
+6. Downloads the published files, verifies the expected signing workflow and
+   source commit, installs the exact version through mise in fresh isolated
+   directories, compares the installed executable with the verified archive,
+   and repeats CLI, persistence, embedded-asset, and all browser checks.
+
+Pull requests run the candidate build and tests without production signing,
+creating tags, or publishing releases. After the initial version is released,
+merges without a version bump leave that release untouched. Change the package
+version in a reviewed change to publish the next version. The signer is
+`.github/workflows/release.yml` on `main`, so workflow identity pinning in the
+verification script includes `@refs/heads/main`.
+
+If a release workflow fails, inspect the failing job and rerun that job after
+resolving the cause. Do not delete a signature, replace published files, clear
+signer pins, or disable checks to make installation succeed. A new version is
+needed to correct an already published executable. A partial draft or conflicting
+tag requires investigation rather than automatic replacement.
+
+## Verify an installed distribution
+
+The verification script deliberately creates a separate mise config, cache,
+data directory, state directory, and install tree. It does not change global
+mise selection or the normal Rhythm state directory:
+
+```sh
+repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+commit=$(git rev-parse HEAD)
+mise exec -- python distribution/install.py \
+  --repository "$repository" --version 0.1.0 --commit "$commit" --browser
+```
+
+Run this at the release commit, or supply that commit explicitly. The expected
+project, version, and source commit must all match the verified statement.
+The script accepts only logged production signatures from the expected workflow
+and GitHub OIDC issuer, and pins both in the isolated mise configuration.
+It has no test-key or unlogged bypass. Its receipt contains generic pass/fail
+fields, version, and archive digest; it does not publish private paths or state.
+
+For a GUI session, add `--launchd` to verify a disposable registration pointing
+at the installed executable, execute synthetic work, restart supervision, and
+confirm retained history. The registration is removed afterward. Browser tests
+set `RHYTHM_BIN` to the installed executable, so the harness cannot silently use
+a debug checkout. Every runtime and workload in these tests uses temporary state.
+The current local-opening trust model remains described in [web-ui.md](web-ui.md).
+
+The local candidate rehearsal uses disposable test keys and never publishes them.
+It verifies packaging and execution before review; production OIDC signing and
+mise release discovery are separately verified by the post-publication job.
+Passing a candidate rehearsal alone does not prove a published release exists.
+
+## Cutover
+
+Installing a version or verifying a disposable runtime does not switch a normal
+runtime registration. After the first published release passes verification,
+cutover is a separate slice: preserve private rollback data, stop the current
+runtime, point its registration at the pinned mise installation, and verify
+services, schedules, history/logs, and UI against the same private state.
+Keep the old executable and rollback data until that verification passes.

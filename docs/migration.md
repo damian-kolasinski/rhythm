@@ -88,7 +88,10 @@ triggers, overlap/missed-run policies, durable dispatch, finite execution record
 and explicit cleanup acknowledgment; see [schedules.md](schedules.md). The embedded web UI now provides the owned-work overview, creation, controls,
 history/logs, explicit cleanup acknowledgment, and a disposable real-runtime
 demo; see [web-ui.md](web-ui.md). Global retention, migration staging with
-rollback, distribution, and live workload cutover remain subsequent work.
+rollback and live workload cutover remain subsequent work. Distribution now has
+pinned mise tasks, deterministic archive packaging, packslip OIDC signing, and
+a fresh-install verification pipeline; see [distribution.md](distribution.md).
+Candidate verification is separate from successful publication of the first release.
 
 ## Discovery verification
 

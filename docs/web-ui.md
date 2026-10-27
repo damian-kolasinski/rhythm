@@ -143,5 +143,5 @@ RHYTHM_DEMO_OUTPUT=/tmp/rhythm-web-demo pnpm --dir web demo
 ```
 
 Only the synthetic demo is recorded. Traces and network captures are disabled.
-Versioned mise/packslip distribution and switching installed runtimes follow in
-the next slice; this change does not cut over existing workloads.
+Versioned mise/packslip distribution is described in [distribution.md](distribution.md).
+Switching normal installed runtimes remains a separate cutover step.
