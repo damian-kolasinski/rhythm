@@ -56,7 +56,7 @@ def verify(repository, release_version, commit, browser=False, supervised=False)
         raise ValueError("invalid release identity")
     archive_name = package.filename(release_version)
     project = "github.com/" + repository
-    identity = f"https://github.com/{repository}/.github/workflows/release.yml@refs/heads/main"
+    identity = f"https://github.com/{repository}/.github/workflows/release.yml@refs/tags/v{release_version}"
     with tempfile.TemporaryDirectory(prefix="rhythm-mise-") as directory:
         root = Path(directory)
         assets = root / "assets"

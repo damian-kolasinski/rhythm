@@ -2,7 +2,7 @@ name: Release
 
 on:
   push:
-    branches: [main]
+    tags: ["v*.*.*"]
   pull_request:
     paths:
       - .github/workflows/**
@@ -15,7 +15,7 @@ on:
       - web/**
 
 concurrency:
-  group: release-${{ github.event_name == 'pull_request' && github.ref || 'publisher' }}
+  group: release-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -26,26 +26,27 @@ env:
   MISE_GITHUB_TOKEN: ${{ github.token }}
 
 jobs:
-  plan:
+  version:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.release.outputs.version }}
       tag: ${{ steps.release.outputs.tag }}
-      publish: ${{ steps.release.outputs.publish }}
       prerelease: ${{ steps.release.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
       - id: release
-        if: github.event_name == 'push'
         env:
-          GH_TOKEN: ${{ github.token }}
-        run: python3 distribution/plan.py --repository "$GITHUB_REPOSITORY" --commit "$GITHUB_SHA" --output "$GITHUB_OUTPUT"
+          RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: python3 distribution/release_version.py --tag "$RELEASE_TAG" --output "$GITHUB_OUTPUT"
+      - name: The release commit belongs to reviewed main history
+        if: github.ref_type == 'tag'
+        run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
   build:
-    needs: plan
-    if: github.event_name == 'pull_request' || needs.plan.outputs.publish == 'true'
+    needs: version
     # Ship only the native target verified by this job; never cross-compile an untested release.
     runs-on: macos-15
     steps:
@@ -70,8 +71,8 @@ jobs:
           if-no-files-found: error
 
   sign:
-    needs: [plan, build]
-    if: github.event_name == 'push' && needs.plan.outputs.publish == 'true'
+    needs: [version, build]
+    if: github.event_name == 'push' && github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -88,8 +89,8 @@ jobs:
         with:
           artifacts: dist/rhythm-*.tar.gz
           bin: rhythm
-          tag: ${{ needs.plan.outputs.tag }}
-          version: ${{ needs.plan.outputs.version }}
+          tag: ${{ needs.version.outputs.tag }}
+          version: ${{ needs.version.outputs.version }}
           commit: ${{ github.sha }}
           upload: false
           # Private repositories without Enterprise can sign with OIDC but cannot use GitHub's attestation service.
@@ -101,7 +102,8 @@ jobs:
           if-no-files-found: error
 
   publish:
-    needs: [plan, sign]
+    if: github.ref_type == 'tag'
+    needs: [version, sign]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -114,17 +116,17 @@ jobs:
       - name: Publish immutable versioned files together
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ needs.plan.outputs.tag }}
-          RELEASE_PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+          RELEASE_TAG: ${{ needs.version.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" --title "$RELEASE_TAG" \
+            --verify-tag --title "$RELEASE_TAG" \
             --prerelease="$RELEASE_PRERELEASE" \
             --notes "Signed Rhythm release. Install this exact version through mise's packslip backend." \
             dist/rhythm-*.tar.gz dist/packslip.sigstore.json
 
   verify-published:
-    needs: [plan, publish]
+    needs: [version, publish]
     runs-on: macos-15
     permissions:
       contents: read
@@ -141,5 +143,5 @@ jobs:
       - name: Install the published signature-verified release through mise and test it
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_VERSION: ${{ needs.plan.outputs.version }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: python distribution/install.py --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" --browser

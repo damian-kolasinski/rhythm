@@ -7,7 +7,9 @@ from install import mise_configuration, validate_statement
 
 class PublishedIdentity(unittest.TestCase):
     def test_install_policy_pins_version_workflow_and_github_issuer(self):
-        identity = "https://github.com/example/rhythm/.github/workflows/release.yml@refs/heads/main"
+        identity = (
+            "https://github.com/example/rhythm/.github/workflows/release.yml@refs/tags/v1.2.3"
+        )
         config = tomllib.loads(mise_configuration("github.com/example/rhythm", "1.2.3", identity))
         self.assertEqual(
             config["tools"]["packslip:github.com/example/rhythm"],

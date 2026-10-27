@@ -67,11 +67,12 @@ that compiler output is reproducible across toolchains or hosts.
 
 ## Release policy and CI
 
-A reviewed merge to `main` starts the Release workflow. If `Cargo.toml` names an
-unpublished version, the workflow:
+Like Mergegate, Rhythm publishes from a `vX.Y.Z` tag. A merge to `main` runs
+source CI without publishing. For a release tag, the Release workflow:
 
-1. Checks whether that version is already published and refuses partial draft
-   releases or a pre-existing tag pointing at another commit.
+1. Requires the tag to match `Cargo.toml` exactly and the tagged commit to belong
+   to reviewed `main` history. A mismatched version or unmerged commit fails
+   before a release build starts.
 2. Installs pinned tools without caches, rebuilds the UI, runs checks and Rust
    tests, and builds/packages the native release. CI rejects stale committed UI
    assets after rebuilding them.
@@ -86,8 +87,8 @@ unpublished version, the workflow:
    packslip signature and artifact verification mandatory.
 5. Publishes the archive and `packslip.sigstore.json` together under `vVERSION`
    using a separate job with repository write permission and no OIDC permission.
-   The tag points to the reviewed source commit. Existing release assets are
-   never overwritten.
+   Publishing requires the existing tag (`--verify-tag`). Existing releases and
+   assets are never overwritten; trying to publish the same tag again fails.
    SemVer prereleases are marked as prereleases rather than stable releases.
 6. Downloads the published files, verifies the expected signing workflow and
    source commit, installs the exact version through mise in fresh isolated
@@ -95,17 +96,36 @@ unpublished version, the workflow:
    and repeats CLI, persistence, embedded-asset, and all browser checks.
 
 Pull requests run the candidate build and tests without production signing,
-creating tags, or publishing releases. After the initial version is released,
-merges without a version bump leave that release untouched. Change the package
-version in a reviewed change to publish the next version. The signer is
-`.github/workflows/release.yml` on `main`, so workflow identity pinning in the
-verification script includes `@refs/heads/main`.
+creating tags, or publishing releases. Release builds use fresh runners and no
+build caches. The signing job has OIDC permission but no repository write access;
+the publishing job has repository write access but no OIDC permission. Those
+boundaries and publishing every asset in one command follow Mergegate’s workflow.
+
+To release, first merge the distribution workflow and the intended Cargo version
+through review. Fetch the reviewed target, inspect the commit, then create the
+version tag through GitHub. For the initial version:
+
+```sh
+git fetch mergegate
+repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
+commit=$(git rev-parse mergegate/main)
+# Confirm this reviewed commit's Cargo version is 0.1.0 before tagging.
+git show "$commit:Cargo.toml"
+gh api "repos/$repository/git/refs" --method POST \
+  -f ref=refs/tags/v0.1.0 -f sha="$commit"
+```
+
+A tag is the explicit release action; it never advances a branch. Do not move or
+replace a release tag. Version bumps go through a reviewed change before the next
+tag. The signing identity is `.github/workflows/release.yml` at the exact release
+tag, so verification pins `@refs/tags/vVERSION` and GitHub’s OIDC issuer.
 
 If a release workflow fails, inspect the failing job and rerun that job after
 resolving the cause. Do not delete a signature, replace published files, clear
 signer pins, or disable checks to make installation succeed. A new version is
-needed to correct an already published executable. A partial draft or conflicting
-tag requires investigation rather than automatic replacement.
+needed to correct an already published executable. An interrupted draft or a tag
+pointing at an unintended commit requires investigation rather than automatic
+replacement.
 
 ## Verify an installed distribution
 

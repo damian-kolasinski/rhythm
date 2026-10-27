@@ -15,8 +15,8 @@ Discovery does not install, start, stop, import, or modify any workload.
 Versioned releases use mise's packslip backend, which verifies the signed release
 and selected archive before installation. See [docs/distribution.md](docs/distribution.md)
 for exact-version installation, private-repository credentials, the supported
-release target, and verification. The first release is published automatically
-when the distribution setup is reviewed and merged.
+release target, and verification. Releases publish from version tags on reviewed
+commits, following Mergegate’s release flow.
 
 ## Run
 
