@@ -5,10 +5,10 @@ the session that created it ends. See [VISION.md](VISION.md) for the product
 direction and [docs/migration.md](docs/migration.md) for the implementation and
 cutover plan. Machine inventory is private and must not be committed or published.
 
-The first implementation slice is read-only discovery of the current user's
-`~/Library/LaunchAgents` registrations on macOS. Services, scheduling, the
-runtime/API, and the web UI are subsequent slices. Discovery does not install,
-start, stop, import, or modify any workload.
+Rhythm currently provides read-only discovery of the current user's
+`~/Library/LaunchAgents` registrations on macOS and a local runtime for
+Rhythm-owned services. Scheduling and the web UI follow in separate slices.
+Discovery does not install, start, stop, import, or modify any workload.
 
 ## Run
 
@@ -41,12 +41,60 @@ unregistered processes. An absent LaunchAgents directory is an empty inventory.
 Unknown launchd properties are flagged as migration requirements; malformed
 registrations are reported separately. No automatic migration is offered.
 
+## Owned services
+
+Build with `cargo build --locked`. Start the shared runtime in one terminal:
+
+```sh
+target/debug/rhythm runtime run
+```
+
+Create a definition in a private file, using absolute executable and working
+directory paths. This example contains only synthetic data:
+
+```json
+{
+  "id": "sample-worker",
+  "command": ["/bin/sh", "-c", "printf 'sample output'"],
+  "working_directory": "/tmp",
+  "restart": "never",
+  "restart_delay_ms": 1000
+}
+```
+
+Then use another terminal:
+
+```sh
+target/debug/rhythm --json service create --file /tmp/sample-service.json
+target/debug/rhythm --json service start sample-worker
+target/debug/rhythm --json service inspect sample-worker
+target/debug/rhythm --json service history sample-worker
+target/debug/rhythm --json service logs 1
+target/debug/rhythm --json service stop sample-worker
+target/debug/rhythm --json runtime stop
+```
+
+Service and runtime commands currently return JSON for successful requests,
+with `--json` also making failures structured. `service list` finds owned work
+across sessions. `service restart` explicitly replaces a current execution;
+repeated `start` preserves an existing execution or retry deadline.
+
+On macOS, `runtime install` registers the current executable under the logged-in
+user's GUI launchd domain; `runtime status` checks the authenticated API.
+Use an executable at a stable location. `runtime stop` removes supervision and
+waits for the runtime to release its lock. `runtime uninstall` removes the
+registration while preserving state and logs. Versioned distribution follows
+in a later slice. See [docs/services.md](docs/services.md) for execution,
+recovery, privacy, and API contracts.
+
 ## Verify
 
 ```sh
 cargo test --locked
 cargo clippy --locked --all-targets -- -D warnings
 cargo fmt --check
+# macOS GUI session: installs and removes one disposable registration
+cargo test --locked --test services launchd_install_cli_service_and_stop_are_verified_end_to_end -- --ignored
 ```
 
 Tests cover XML and binary plists, calendar boundaries, interval and startup
@@ -54,6 +102,12 @@ triggers, restart policies, observed/unobserved/unknown states, duplicate
 labels, partial inventories, secret omission, and terminal control escaping.
 On macOS the CLI integration test uses the real `launchctl` with an isolated
 HOME and unregistered fixtures; no workload is registered or executed.
+
+Owned-service tests use real processes, SQLite, loopback HTTP, private temporary
+storage, and synthetic workloads. They cover cancellation and descendant
+cleanup, restart throttling, runtime crashes, uncertain monitor loss, explicit
+cleanup acknowledgment, credentials, inherited ACLs, bounded output, and
+concurrent shutdown. Launchd adapter tests fake only the external command.
 
 ## Code review
 

@@ -1,5 +1,9 @@
 use clap::{Parser, Subcommand};
 use rhythm::{discovery, launchd::LaunchdInventory, terminal};
+use rhythm::{
+    service_cli::{self, RuntimeCommand, ServiceCommand},
+    services,
+};
 use std::{
     io::{self, Write},
     path::PathBuf,
@@ -12,6 +16,9 @@ struct Cli {
     /// Machine-readable output; diagnostics are structured and source values are omitted.
     #[arg(long, global = true)]
     json: bool,
+    /// Private runtime storage directory (defaults to the user application state directory).
+    #[arg(long, global = true)]
+    data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
 }
@@ -20,13 +27,81 @@ struct Cli {
 enum Commands {
     /// Inspect the current user's launchd registrations without changing them.
     Discover,
+    /// Run or inspect the shared local runtime.
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
+    /// Create and control Rhythm-owned services.
+    Service {
+        #[command(subcommand)]
+        command: ServiceCommand,
+    },
+    #[command(name = "__monitor", hide = true)]
+    Monitor { fd: i32 },
+    #[command(name = "__anchor", hide = true)]
+    Anchor,
 }
 
-fn main() -> ExitCode {
-    let cli = Cli::parse();
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> ExitCode {
+    let cli = match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error)
+            if matches!(
+                error.kind(),
+                clap::error::ErrorKind::DisplayHelp | clap::error::ErrorKind::DisplayVersion
+            ) =>
+        {
+            return if error.print().is_ok() {
+                ExitCode::SUCCESS
+            } else {
+                ExitCode::FAILURE
+            };
+        }
+        Err(_) => {
+            return failure(
+                std::env::args_os().any(|a| a == "--json"),
+                "invalid_request",
+                "Invalid command. Run rhythm --help.",
+            );
+        }
+    };
+    match cli.command {
+        Commands::Discover => discover(cli.json),
+        Commands::Monitor { fd } => match rhythm::execution::run_monitor(fd).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        },
+        Commands::Anchor => loop {
+            std::thread::park();
+        },
+        command => {
+            let result: services::Result<services::Response> = async {
+                let root = service_cli::root(cli.data_dir)?;
+                match command {
+                    Commands::Runtime { command } => service_cli::runtime(command, root).await,
+                    Commands::Service { command } => service_cli::service(command, root).await,
+                    _ => unreachable!(),
+                }
+            }
+            .await;
+            match result {
+                Ok(response) => write_output(
+                    &(serde_json::to_string_pretty(&response).unwrap() + "\n"),
+                    cli.json,
+                    false,
+                ),
+                Err(error) => failure(cli.json, &error.to_string(), &error.to_string()),
+            }
+        }
+    }
+}
+
+fn discover(json: bool) -> ExitCode {
     if !cfg!(target_os = "macos") {
         return failure(
-            cli.json,
+            json,
             "unsupported_platform",
             "Discovery currently supports macOS only.",
         );
@@ -35,28 +110,27 @@ fn main() -> ExitCode {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
     else {
-        return failure(cli.json, "invalid_home", "HOME must be an absolute path.");
+        return failure(json, "invalid_home", "HOME must be an absolute path.");
     };
     let inventory = discovery::discover(&LaunchdInventory::new(home.join("Library/LaunchAgents")));
-    let output = if cli.json {
+    let output = if json {
         serde_json::to_string_pretty(&inventory).expect("inventory serializes") + "\n"
     } else {
         terminal::render(&inventory)
     };
+    write_output(&output, json, !inventory.complete)
+}
+fn write_output(output: &str, json: bool, partial: bool) -> ExitCode {
     match io::stdout().lock().write_all(output.as_bytes()) {
         Ok(()) => {
-            if inventory.complete {
-                ExitCode::SUCCESS
-            } else {
+            if partial {
                 ExitCode::from(2)
+            } else {
+                ExitCode::SUCCESS
             }
         }
         Err(e) if e.kind() == io::ErrorKind::BrokenPipe => ExitCode::SUCCESS,
-        Err(_) => failure(
-            cli.json,
-            "output_unavailable",
-            "Could not write the inventory.",
-        ),
+        Err(_) => failure(json, "output_unavailable", "Could not write the inventory."),
     }
 }
 

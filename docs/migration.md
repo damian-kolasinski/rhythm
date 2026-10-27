@@ -37,8 +37,8 @@ live workload cutover follow reviewed implementation. Never include personal or 
 
 | Slice | CLI/runtime | UI | Verification |
 | --- | --- | --- | --- |
-| 1. Read-only discovery (this branch) | `discover [--json]`, typed inventory port, launchd adapter, safe diagnostics, migration requirements | Define inventory contract for later reuse | Parser tests, real-file integration with fake external launchctl, real CLI E2E, private validation on target machines |
-| 2. Owned services and execution records | Validated service definitions; SQLite persistence port; process execution and platform supervision ports; foreground runtime; install/status/stop runtime; create/list/inspect/start/stop/restart services; execution IDs, desired/observed states and exit reasons; bounded private logs | Shared authenticated local API; service list/detail, failures, logs, start/stop/restart | Durable-state/process integration; process-group cancellation; crash/restart reconciliation; no duplicate supervisors; real launchd installation with disposable service |
+| 1. Read-only discovery | `discover [--json]`, typed inventory port, launchd adapter, safe diagnostics, migration requirements | Define inventory contract for later reuse | Parser tests, real-file integration with fake external launchctl, real CLI E2E, private validation on target machines |
+| 2. Owned services and execution records | Validated service definitions; SQLite persistence port; process execution and platform supervision ports; foreground runtime; install/status/stop runtime; create/list/inspect/start/stop/restart services; execution IDs, desired/observed states and exit reasons; bounded private logs | Shared authenticated local API; UI controls follow in slice 4 | Durable-state/process integration; process-group cancellation; crash/restart reconciliation; no duplicate supervisors; real launchd installation with disposable service |
 | 3. Persisted schedules | Interval/daily/weekly definitions, run-now/pause/resume; explicit overlap and missed-run policy; durable executions and next-run calculation | Upcoming runs, schedule details/history, pause/resume/run-now | Clock-boundary tests; fake clock at system boundary; real finite processes; sleep/restart and overlap integration |
 | 4. Human overview and migration rehearsal | Shared CLI/application contracts; structured API errors; origin/auth boundaries; safe output and retention; validate/stage migration with rollback | Solid/TypeScript/Vite served by Rust; overview, search, attention states, ownership, confirmation for consequential controls | Rendering goldens for empty/loading/error/running/failed/unknown; browser E2E for controls/history/logs and authorization; fixtures before adoption |
 | 5. Distribution | Pinned mise development tasks; versioned archive with embedded UI; packslip attestations and mise installation instructions | Served assets come from installed binary | CI builds/tests; archive extraction E2E; signed release installation in isolated mise data directory |
@@ -77,6 +77,14 @@ The release matrix must match supported platforms and corresponding verification
 Validate the published artifact in an isolated installation, then verify runtime
 registration points to the installed executable. Repeat service, schedule, and
 UI checks after switching, retaining private rollback data until they pass.
+
+## Current implementation
+
+Read-only discovery is implemented. Owned services add the local runtime/API,
+SQLite state, contained foreground execution, explicit recovery acknowledgment,
+private bounded logs, and owned launchd installation. See [services.md](services.md)
+for the verified contract and current limitations. Schedules, the web UI, global
+retention, distribution, and live workload cutover remain subsequent slices.
 
 ## Discovery verification
 
