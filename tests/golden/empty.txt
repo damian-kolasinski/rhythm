@@ -1,0 +1,8 @@
+External launchd registrations (read-only, current user)
+
+STATE	KIND	LABEL	TRIGGERS
+
+0 registrations; snapshot complete.
+Scope excludes system agents/daemons, cron, app-managed schedules, and unregistered processes.
+Observation covers the caller's launchd context; not-observed may be loaded in another domain.
+Idle/exit status describes a launcher; downstream completion needs separate evidence.
