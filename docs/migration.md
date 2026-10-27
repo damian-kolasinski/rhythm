@@ -85,8 +85,10 @@ SQLite state, contained foreground execution, explicit recovery acknowledgment,
 private bounded logs, and owned launchd installation. See [services.md](services.md)
 for the verified service contract. Persisted schedules add interval/daily/weekly
 triggers, overlap/missed-run policies, durable dispatch, finite execution records,
-and explicit cleanup acknowledgment; see [schedules.md](schedules.md). The web UI,
-global retention, distribution, and live workload cutover remain subsequent slices.
+and explicit cleanup acknowledgment; see [schedules.md](schedules.md). The embedded web UI now provides the owned-work overview, creation, controls,
+history/logs, explicit cleanup acknowledgment, and a disposable real-runtime
+demo; see [web-ui.md](web-ui.md). Global retention, migration staging with
+rollback, distribution, and live workload cutover remain subsequent work.
 
 ## Discovery verification
 
@@ -94,5 +96,6 @@ Automated coverage includes XML and binary registrations, interval and calendar
 boundaries, implicit startup behavior, bootstrap-context uncertainty, partial
 inventories, special files, secret omission, terminal rendering goldens, and a
 CLI end-to-end check using real launchctl with isolated synthetic fixtures.
-These checks validate discovery; runtime, UI, distribution, and cutover require
-their own later verification.
+These checks validate discovery. Runtime, schedules, and UI have separate
+integration and E2E suites documented alongside their contracts. Distribution
+and live cutover still require their own later verification.
