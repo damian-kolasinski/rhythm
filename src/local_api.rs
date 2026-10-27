@@ -1,5 +1,10 @@
 //! Loopback HTTP transport, with private-file credentials and no browser access yet.
-use crate::{local_access::Access, private_storage::Root, services::*};
+use crate::{
+    local_access::Access,
+    operation_error::{Error, Result},
+    private_storage::Root,
+    runtime_protocol::{Command, Request, Response},
+};
 use axum::{
     Json, Router,
     extract::{DefaultBodyLimit, Request as HttpRequest, State, rejection::JsonRejection},
@@ -66,7 +71,9 @@ async fn handle(
         Ok(Err(error)) => api_error(
             match error {
                 Error::NotFound => StatusCode::NOT_FOUND,
-                Error::AlreadyExists | Error::RecoveryRequired => StatusCode::CONFLICT,
+                Error::AlreadyExists | Error::RecoveryRequired | Error::Busy => {
+                    StatusCode::CONFLICT
+                }
                 Error::InvalidRequest => StatusCode::BAD_REQUEST,
                 _ => StatusCode::INTERNAL_SERVER_ERROR,
             },
@@ -75,7 +82,7 @@ async fn handle(
         Err(_) => api_error(StatusCode::SERVICE_UNAVAILABLE, Error::RuntimeUnavailable),
     }
 }
-pub async fn call(root: &Root, request: &Request) -> Result<Response> {
+pub async fn call<C: Command>(root: &Root, request: &C) -> Result<C::Response> {
     let access = Access::read(root)?;
     let client = reqwest::Client::builder()
         .no_proxy()

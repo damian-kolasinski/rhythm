@@ -37,6 +37,11 @@ enum Commands {
         #[command(subcommand)]
         command: ServiceCommand,
     },
+    /// Create and control persisted interval and calendar schedules.
+    Schedule {
+        #[command(subcommand)]
+        command: rhythm::schedule_cli::ScheduleCommand,
+    },
     #[command(name = "__monitor", hide = true)]
     Monitor { fd: i32 },
     #[command(name = "__anchor", hide = true)]
@@ -77,11 +82,14 @@ async fn main() -> ExitCode {
             std::thread::park();
         },
         command => {
-            let result: services::Result<services::Response> = async {
+            let result: services::Result<rhythm::runtime_protocol::Response> = async {
                 let root = service_cli::root(cli.data_dir)?;
                 match command {
                     Commands::Runtime { command } => service_cli::runtime(command, root).await,
                     Commands::Service { command } => service_cli::service(command, root).await,
+                    Commands::Schedule { command } => {
+                        rhythm::schedule_cli::run(command, root).await
+                    }
                     _ => unreachable!(),
                 }
             }

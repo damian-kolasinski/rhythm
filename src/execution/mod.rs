@@ -1,8 +1,10 @@
 //! Execution-host adapter: a monitor retains the execution lock and a stdin lease.
 mod monitor;
 use crate::{
+    execution_host::ExecutionHost,
+    execution_records::*,
+    operation_error::{Error, Result},
     private_storage::{self, Root},
-    services::*,
 };
 pub use monitor::run_monitor;
 use serde::{Deserialize, Serialize};
@@ -21,7 +23,7 @@ use std::{
 struct Input {
     root: PathBuf,
     id: ExecutionId,
-    definition: Definition,
+    definition: crate::execution_command::CommandSpec,
 }
 struct Running {
     child: Child,
@@ -45,7 +47,11 @@ impl ProcessHost {
     }
 }
 impl ExecutionHost for ProcessHost {
-    fn start(&mut self, id: ExecutionId, definition: &Definition) -> Result<u32> {
+    fn start(
+        &mut self,
+        id: ExecutionId,
+        definition: &crate::execution_command::CommandSpec,
+    ) -> Result<u32> {
         let frame = serde_json::to_vec(&Input {
             root: self.root.path().to_owned(),
             id,
@@ -131,24 +137,27 @@ impl ExecutionHost for ProcessHost {
             finished_at_ms: timestamp_ms(),
         })))
     }
-    fn recover(&mut self, e: &Execution) -> Result<Option<Completion>> {
+    fn recover(&mut self, e: &Execution) -> Result<Recovery> {
         let dir = self.root.run(e.id)?;
         let Some(_lock) = private_storage::try_lock(&dir.join("monitor.lock"))? else {
-            return Ok(None);
+            return Ok(Recovery::Waiting);
         };
-        Ok(Some(self.completion(e.id).unwrap_or(Completion {
-            outcome: if e.supervisor_pid.is_none()
-                && match std::fs::symlink_metadata(dir.join("launch-attempt.json")) {
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
-                    Ok(_) => false,
-                    Err(_) => return Err(Error::StorageUnavailable),
-                } {
-                Outcome::Interrupted
-            } else {
-                Outcome::MonitorLost
-            },
+        if let Ok(completion) = self.completion(e.id) {
+            return Ok(Recovery::Completed(completion));
+        }
+        if e.supervisor_pid.is_none()
+            && match std::fs::symlink_metadata(dir.join("launch-attempt.json")) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => true,
+                Ok(_) => false,
+                Err(_) => return Err(Error::StorageUnavailable),
+            }
+        {
+            return Ok(Recovery::NeverAttempted);
+        }
+        Ok(Recovery::Completed(Completion {
+            outcome: Outcome::MonitorLost,
             finished_at_ms: timestamp_ms(),
-        })))
+        }))
     }
     fn logs(&self, id: ExecutionId) -> Result<(String, String)> {
         let dir = self.root.run(id)?;

@@ -49,7 +49,10 @@ impl Fixture {
     }
     async fn ready(&self) {
         for _ in 0..250 {
-            if local_api::call(&self.root, &Request::Status).await.is_ok() {
+            if local_api::call(&self.root, &rhythm::runtime_protocol::Request::Status)
+                .await
+                .is_ok()
+            {
                 return;
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
@@ -100,7 +103,9 @@ impl Fixture {
         if crash {
             self.runtime.kill().unwrap();
         } else {
-            self.call(Request::Shutdown).await;
+            local_api::call(&self.root, &rhythm::runtime_protocol::Request::Shutdown)
+                .await
+                .unwrap();
         }
         wait_child(&mut self.runtime).await;
         self.runtime = Self::spawn(&self.root);
@@ -276,15 +281,11 @@ async fn policies_and_retry_deadlines_survive_runtime_restart() {
         })
         .await
     {
-        Response::Service {
-            service:
-                ServiceView {
-                    observed: Observed::Waiting { retry_at_ms },
-                    ..
-                },
-            ..
-        } => retry_at_ms,
-        _ => panic!("retry deadline missing"),
+        Response::Service { service, .. } => match service.observed {
+            Observed::Waiting { retry_at_ms } => retry_at_ms,
+            _ => panic!("retry deadline missing"),
+        },
+        _ => panic!("service response missing"),
     };
     for _ in 0..3 {
         let response = f
@@ -293,7 +294,7 @@ async fn policies_and_retry_deadlines_survive_runtime_restart() {
             })
             .await;
         assert!(
-            matches!(response, Response::Service {service:ServiceView { observed: Observed::Waiting { retry_at_ms }, .. },..} if retry_at_ms == deadline)
+            matches!(response,Response::Service{service,..} if matches!(service.observed,Observed::Waiting{retry_at_ms} if retry_at_ms==deadline))
         );
     }
     f.restart_runtime(false).await;
@@ -412,7 +413,9 @@ async fn shutdown_with_concurrent_requests_finishes() {
             local_api::call(&root, &Request::List).await
         }));
     }
-    f.call(Request::Shutdown).await;
+    local_api::call(&f.root, &rhythm::runtime_protocol::Request::Shutdown)
+        .await
+        .unwrap();
     wait_child(&mut f.runtime).await;
     for request in requests {
         let _ = tokio::time::timeout(Duration::from_secs(3), request)
@@ -451,11 +454,14 @@ async fn output_is_bounded_and_excess_is_drained() {
         fs::metadata(f.root.path()).unwrap().permissions().mode() & 0o777,
         0o700
     );
-    if let Response::Logs { stdout, stderr } = f
-        .call(Request::Logs {
+    if let rhythm::runtime_protocol::Response::Logs { stdout, stderr } = local_api::call(
+        &f.root,
+        &rhythm::runtime_protocol::Request::Logs {
             execution_id: e[0].id,
-        })
-        .await
+        },
+    )
+    .await
+    .unwrap()
     {
         assert_eq!(stdout.len(), 65536);
         assert_eq!(stderr, "done")
