@@ -80,67 +80,67 @@ def verify(binary, release_version, supervised=False):
                     definition = plistlib.load(file)
                 if definition["ProgramArguments"][0] != str(binary):
                     raise RuntimeError("registration does not use installed executable")
-            service = {
-                "id": "sample-distributed-service",
-                "command": ["/bin/sh", "-c", "printf distributed-service"],
-                "working_directory": "/tmp",
-                "restart": "never",
-            }
-            schedule = {
-                "id": "sample-distributed-schedule",
-                "command": ["/bin/sh", "-c", "printf distributed-schedule"],
-                "working_directory": "/tmp",
-                "trigger": {"type": "interval", "every_ms": 1000},
-                "overlap": "skip",
-                "missed": "skip",
-            }
-            for name, definition in [("service", service), ("schedule", schedule)]:
-                file = Path(directory) / (name + ".json")
+            schedules = [
+                {
+                    "id": "sample-distributed-report",
+                    "command": ["/bin/sh", "-c", "printf distributed-report"],
+                    "working_directory": "/tmp",
+                    "trigger": {"type": "interval", "every_ms": 1000},
+                    "overlap": "skip",
+                    "missed": "skip",
+                },
+                {
+                    "id": "sample-distributed-cleanup",
+                    "command": ["/bin/sh", "-c", "printf distributed-cleanup"],
+                    "working_directory": "/tmp",
+                    "trigger": {"type": "interval", "every_ms": 1000},
+                    "overlap": "skip",
+                    "missed": "skip",
+                },
+            ]
+            ids = []
+            for definition, expected in zip(
+                schedules, ["distributed-report", "distributed-cleanup"], strict=True
+            ):
+                file = Path(directory) / (definition["id"] + ".json")
                 file.write_text(json.dumps(definition))
                 file.chmod(0o600)
-                cli(binary, root, name, "create", "--file", str(file))
-            cli(binary, root, "service", "start", service["id"])
-            service_history = wait_for(
-                lambda: cli(binary, root, "service", "history", service["id"]),
-                lambda value: (
-                    bool(value["executions"])
-                    and value["executions"][0]["outcome"] == {"type": "exited", "code": 0}
-                ),
-            )
-            cli(binary, root, "schedule", "run-now", schedule["id"])
-            scheduled = wait_for(
-                lambda: cli(binary, root, "schedule", "history", schedule["id"]),
-                lambda value: (
-                    bool(value["response"]["executions"])
-                    and value["response"]["executions"][0]["outcome"]
-                    == {"type": "exited", "code": 0}
-                ),
-            )
-            ids = [
-                service_history["executions"][0]["id"],
-                scheduled["response"]["executions"][0]["id"],
-            ]
-            if ids[0] == ids[1]:
-                raise RuntimeError("execution IDs are not shared")
-            for execution, expected in zip(
-                ids, ["distributed-service", "distributed-schedule"], strict=True
-            ):
-                if cli(binary, root, "service", "logs", str(execution))["stdout"] != expected:
+                cli(binary, root, "schedule", "create", "--file", str(file))
+                cli(binary, root, "schedule", "run-now", definition["id"])
+                history = wait_for(
+                    lambda schedule_id=definition["id"]: cli(
+                        binary, root, "schedule", "history", schedule_id
+                    ),
+                    lambda value: (
+                        bool(value["executions"])
+                        and value["executions"][0]["outcome"] == {"type": "exited", "code": 0}
+                    ),
+                )
+                execution = history["executions"][0]
+                if (
+                    execution["schedule_id"] != definition["id"]
+                    or execution["invocation"]["source"] != "manual"
+                ):
+                    raise RuntimeError("schedule execution ownership mismatch")
+                ids.append(execution["id"])
+                if (
+                    cli(binary, root, "schedule", "logs", str(execution["id"]))["stdout"]
+                    != expected
+                ):
                     raise RuntimeError("distributed output mismatch")
+            if ids[0] == ids[1]:
+                raise RuntimeError("schedule execution IDs are not shared")
             stop()
             start()
-            if (
-                cli(binary, root, "service", "history", service["id"])["executions"][0]["id"]
-                != ids[0]
-            ):
-                raise RuntimeError("service history did not persist")
-            if (
-                cli(binary, root, "schedule", "history", schedule["id"])["response"]["executions"][
-                    0
-                ]["id"]
-                != ids[1]
-            ):
-                raise RuntimeError("schedule history did not persist")
+            for definition, execution in zip(schedules, ids, strict=True):
+                if (
+                    cli(binary, root, "schedule", "history", definition["id"])["executions"][0][
+                        "id"
+                    ]
+                    != execution
+                ):
+                    raise RuntimeError("schedule history did not persist")
+            schedule = schedules[0]
             launch = cli(binary, root, "ui", "--no-open")
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             for path, expected in [
@@ -160,7 +160,7 @@ def verify(binary, release_version, supervised=False):
             cli(binary, root, "schedule", "resume", schedule["id"])
             wait_for(
                 lambda: cli(binary, root, "schedule", "history", schedule["id"]),
-                lambda value: len(value["response"]["executions"]) >= 2,
+                lambda value: len(value["executions"]) >= 2,
             )
             cli(binary, root, "schedule", "pause", schedule["id"])
         finally:
@@ -173,7 +173,6 @@ def verify(binary, release_version, supervised=False):
     return {
         "version": release_version,
         "cli": True,
-        "services": True,
         "schedules": True,
         "persistence": True,
         "embedded_ui": True,

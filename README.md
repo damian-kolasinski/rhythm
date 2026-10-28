@@ -1,160 +1,87 @@
 # Rhythm
 
-Rhythm keeps background work discoverable, observable, and manageable after
-the session that created it ends. See [VISION.md](VISION.md) for the product
-direction and [docs/migration.md](docs/migration.md) for the implementation and
-cutover plan. Machine inventory is private and must not be committed or published.
+Rhythm runs recurring commands on one machine and keeps their next run, result,
+history, and output available across sessions. Define interval, daily, or weekly
+schedules through the CLI, then inspect and control them in a small local web UI.
 
-Rhythm currently provides read-only discovery of the current user's
-`~/Library/LaunchAgents` registrations on macOS and a local runtime for
-Rhythm-owned services and persisted schedules, with an embedded web workspace.
-Discovery does not install, start, stop, import, or modify any workload.
+See [VISION.md](VISION.md) for scope, [schedule behavior](docs/schedules.md),
+[execution and storage](docs/execution.md), [runtime supervision](docs/runtime.md),
+and [browser behavior](docs/web-ui.md). Real definitions and execution output
+belong in private operational storage, outside this repository.
 
-## Install
+## Install and run
 
-Versioned releases use mise's packslip backend, which verifies the signed release
-and selected archive before installation. See [docs/distribution.md](docs/distribution.md)
-for exact-version installation, private-repository credentials, the supported
-release target, and verification. Releases publish from version tags on reviewed
-commits, following Mergegate’s release flow.
+Versioned releases use mise's packslip backend to verify the signed release and
+archive. See [distribution](docs/distribution.md) for installation and verification.
 
-## Run
-
-Install the Rust toolchain specified in `rust-toolchain.toml`, then:
+For development, install the pinned tools in `mise.toml`, then:
 
 ```sh
-cargo run -- discover
-cargo run -- discover --json
-```
-
-JSON has `schema_version: 1`, explicit registration and observation scope and
-ownership, registrations, and diagnostics. Exit codes: `0` for a complete
-snapshot of this scope, `2` for a partial snapshot, and `1` for an execution/setup
-failure. A partial snapshot still includes every successfully parsed
-registration. Invalid files produce diagnostics without echoing their contents.
-Arguments and environment values are never included; discovery only reports
-the number of environment variables. The CLI can run independently on each
-machine; it has no remote execution mode.
-
-`launchctl list` observes the calling user's launchd context. Idle registrations
-carry their launcher's last exit status; a running PID carries a previous exit
-status, which is not a current health check. Neither implies downstream task
-completion. A registration absent from that context is `not_observed`, since it
-could be loaded in another bootstrap domain (for example, GUI versus SSH).
-Unavailable or unrecognized observation produces `unknown` and marks the
-snapshot partial.
-
-Discovery excludes system agents/daemons, cron, app-managed schedules and
-unregistered processes. An absent LaunchAgents directory is an empty inventory.
-Unknown launchd properties are flagged as migration requirements; malformed
-registrations are reported separately. No automatic migration is offered.
-
-## Owned services
-
-Build with `cargo build --locked`. Start the shared runtime in one terminal:
-
-```sh
-target/debug/rhythm runtime run
-```
-
-Create a definition in a private file, using absolute executable and working
-directory paths. This example contains only synthetic data:
-
-```json
-{
-  "id": "sample-worker",
-  "command": ["/bin/sh", "-c", "printf 'sample output'"],
-  "working_directory": "/tmp",
-  "restart": "never",
-  "restart_delay_ms": 1000
-}
-```
-
-Then use another terminal:
-
-```sh
-target/debug/rhythm --json service create --file /tmp/sample-service.json
-target/debug/rhythm --json service start sample-worker
-target/debug/rhythm --json service inspect sample-worker
-target/debug/rhythm --json service history sample-worker
-target/debug/rhythm --json service logs 1
-target/debug/rhythm --json service stop sample-worker
-target/debug/rhythm --json runtime stop
-```
-
-Service and runtime commands currently return JSON for successful requests,
-with `--json` also making failures structured. `service list` finds owned work
-across sessions. `service restart` explicitly replaces a current execution;
-repeated `start` preserves an existing execution or retry deadline.
-
-On macOS, `runtime install` registers the current executable as a Background
-LaunchAgent in the current user's non-graphical launchd domain. It works over
-SSH without a graphical login and remains supervised after disconnection.
-An already loaded GUI registration stays in its original domain during an
-update; stop and uninstall find owned registrations in either domain.
-This is user-scoped supervision, not a system daemon: it requires an available
-user domain and does not promise startup before that domain exists.
-`runtime status` checks the authenticated API.
-Use an executable at a stable location. `runtime stop` removes supervision and
-waits for the runtime to release its lock. `runtime uninstall` removes the
-registration while preserving state and logs. Versioned distribution uses mise and packslip; see [docs/distribution.md](docs/distribution.md). See [docs/services.md](docs/services.md) for execution,
-recovery, privacy, and API contracts.
-
-## Persisted schedules
-
-Schedules support interval, daily, and weekly triggers with explicit overlap
-and missed-run policies. They start paused and share service execution IDs,
-private logs, and crash recovery. Use `schedule create --file FILE`, `run-now`,
-`resume`, `pause`, `cancel`, `list`, `inspect`, `history`, and `logs`.
-See [docs/schedules.md](docs/schedules.md) for definitions, timezone/DST rules,
-queueing, recovery, and CLI examples.
-
-## Web workspace and demo
-
-Start the runtime, then run `rhythm ui` to open the workspace directly.
-Browse a single filterable list of services and schedules,
-control execution, inspect history and output, and acknowledge investigated
-uncertain completions. Create work through the CLI; the browser focuses on
-inspection and controls. Like mergegate, the loopback workspace trusts local
-callers, including other OS accounts, to create/run commands with the runtime
-account's permissions.
-
-Run `rhythm demo` for disposable synthetic work using the real runtime.
-Ctrl-C stops the demo and removes its temporary state. Use `--no-open` with
-`ui` or `demo` to launch the browser manually. See [docs/web-ui.md](docs/web-ui.md)
-for browser trust, build steps, E2E tests, and demo recording instructions.
-Distribution builds and verifies signed releases through mise/packslip; installed-runtime cutover remains a separate step.
-
-## Verify
-
-```sh
-cargo test --locked
-cargo clippy --locked --all-targets -- -D warnings
-cargo fmt --check
-# Rebuild frontend assets before rebuilding the embedded binary
 pnpm --dir web install --frozen-lockfile
 pnpm --dir web build
 cargo build --locked
-pnpm --dir web exec playwright install chromium
-pnpm --dir web test
-# macOS user launchd domain: installs and removes one disposable registration
-cargo test --locked --test services launchd_install_cli_service_and_stop_are_verified_end_to_end -- --ignored
+target/debug/rhythm runtime run
 ```
 
-Tests cover XML and binary plists, calendar boundaries, interval and startup
-triggers, restart policies, observed/unobserved/unknown states, duplicate
-labels, partial inventories, secret omission, and terminal control escaping.
-On macOS the CLI integration test uses the real `launchctl` with an isolated
-HOME and unregistered fixtures; no workload is registered or executed.
+In another terminal, create a schedule from a private definition file. This
+example uses only synthetic data:
 
-Owned-service tests use real processes, SQLite, loopback HTTP, private temporary
-storage, and synthetic workloads. They cover cancellation and descendant
-cleanup, restart throttling, runtime crashes, uncertain monitor loss, explicit
-cleanup acknowledgment, credentials, inherited ACLs, bounded output, and
-concurrent shutdown. Schedule tests additionally verify persisted cursors,
-calendar dispatch, overlap/missed policies, queueing across interruptions, and
-schema migration. Launchd adapter tests fake only the external command.
+```json
+{
+  "id": "sample-report",
+  "command": ["/bin/sh", "-c", "printf 'sample report'"],
+  "working_directory": "/tmp",
+  "trigger": { "type": "interval", "every_ms": 60000 },
+  "overlap": "skip",
+  "missed": "run_once"
+}
+```
 
-## Code review
+```sh
+target/debug/rhythm --json schedule create --file /tmp/sample-schedule.json
+target/debug/rhythm --json schedule run-now sample-report
+target/debug/rhythm --json schedule history sample-report
+target/debug/rhythm --json schedule logs 1
+target/debug/rhythm --json schedule resume sample-report
+target/debug/rhythm ui
+```
 
-Use mergegate for code review.
+Schedules start paused. `run-now` runs while paused; `resume` enables automatic
+triggers. `pause` allows active and accepted manual runs to finish. `cancel`
+stops active and queued runs, leaving future triggers enabled unless paused.
+
+Successful commands return JSON. `--json` also makes errors structured. Exit
+codes are `0` for success and `1` for failure. Commands require absolute executable
+and working-directory paths, receive a fixed system PATH, and inherit no session
+environment or credentials. A shell runs only when explicitly configured.
+
+Use `runtime install` on macOS to supervise the scheduler with launchd, or
+`runtime stop` to stop it. `runtime uninstall` preserves private state and logs.
+Use an executable at a stable location. See [runtime](docs/runtime.md).
+
+The schedules-only database uses schema 3. Other existing schema versions are
+refused with `unsupported_schema`; start with a fresh `--data-dir` when switching
+from a different schema. There is no migration or compatibility layer.
+
+## Demo and verification
+
+`rhythm demo` opens disposable synthetic schedules using the real runtime.
+Ctrl-C stops execution and removes the temporary state. `--no-open` prints the
+URL for manual browser opening. The local browser trusts callers that can reach
+loopback, including other local OS accounts; see [web trust](docs/web-ui.md).
+
+```sh
+mise run check
+cargo test --locked
+cargo build --locked
+pnpm --dir web exec playwright install chromium
+pnpm --dir web test
+python distribution/smoke.py --binary target/debug/rhythm --version 0.1.1
+# Optional macOS launchd check using disposable state:
+cargo test --locked --test schedules_e2e launchd_runtime_executes_and_restores_persisted_schedules_end_to_end -- --ignored
+```
+
+Checks use synthetic fixtures and cover recurrence/DST boundaries, overlap and
+missed-run policies, durable dispatch, runtime interruption, uncertain outcomes,
+contained cancellation, private storage, API authorization, logs, and browser
+flows/rendering. Submit reviewed changes through mergegate.

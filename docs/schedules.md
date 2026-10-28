@@ -1,10 +1,9 @@
 # Persisted schedules
 
-Schedules run finite, trusted foreground commands through the same monitors,
-process-group cleanup, private output capture, and global execution IDs as
-services. Service and schedule IDs occupy separate namespaces. Definitions are
-immutable after creation; editing/removal and external workload adoption remain
-separate capabilities.
+Schedules run finite, trusted foreground commands with contained cleanup,
+private output capture, and durable execution records. Definitions are immutable
+after creation. See [execution and storage](execution.md) for process and privacy
+contracts.
 
 ## Create and inspect
 
@@ -42,15 +41,16 @@ and drops queued automatic work, while allowing an active execution or already
 accepted manual invocation to finish. `cancel` clears queued work and stops the
 active process group; it leaves future triggers enabled unless paused separately.
 
-Commands return JSON, with `--json` also making failures structured. Schedule
-responses have `type: schedule` and a nested `response`. Inspect exposes enabled
+Commands return JSON, with `--json` also making failures structured. List returns
+`type: schedules`; inspect returns `type: schedule`; history
+returns `type: history`. Responses are flat. Inspect exposes enabled
 state, the next automatic run, one pending invocation, the latest trigger
 decision, current observation, and the latest execution. History returns the
 latest 100 execution records. Skipped occurrences do not create executions;
 the latest decision explains `skipped_missed`, `skipped_overlap`, or `queued`.
 Execution ownership includes `schedule_id` and an `invocation` identifying its
 scheduled due time or manual request time. Logs use global execution IDs and
-the same limits and privacy rules as [owned services](services.md).
+the limits and privacy rules in [execution and storage](execution.md).
 
 ## Trigger and time contracts
 
@@ -101,9 +101,9 @@ checked when accepting a due occurrence; accepted pending work may wait longer.
 An already accepted manual pending invocation is never replaced by an automatic
 trigger. Another `run-now` while any invocation is already pending returns `busy`.
 Queueing does not allow simultaneous executions of the same schedule. Separate
-schedules and services may execute concurrently. Normal exits, signals, spawn
-failures, and interruptions are recorded once; future triggers continue
-independently, without service retries. Uncertain outcomes block as described below.
+schedules may execute concurrently. Normal exits, signals, spawn failures, and
+interruptions are recorded once; future triggers continue
+independently. Uncertain outcomes block as described below.
 
 ## Durability, recovery, and access
 
@@ -127,20 +127,18 @@ Acknowledgment preserves the outcome and records its time, clears pending work,
 and pauses the schedule. Starting again requires an explicit `run-now` or
 `resume`. The acknowledgment command does not terminate unknown processes.
 
-Runtime startup transactionally upgrades schema 1 to schema 2, preserving
-existing service definitions, desired state, execution IDs, history, and recovery
-acknowledgments. A newer unsupported schema is refused. Older binaries cannot
-open schema 2; retain a private pre-upgrade backup when planning a rollback.
+The database uses schema 3 with required schedule ownership. Other schema
+versions are refused without migration; use a fresh state directory.
 
 Schedules share the authenticated CLI API and the trusted-loopback browser API
 described in [web-ui.md](web-ui.md), along with private permissions, ACL checks,
-and bounded definition-file reads. Both use the shared request envelope:
+and bounded definition-file reads. Both accept flat schedule commands:
 
 ```json
-{ "operation": "schedule", "command": { "operation": "run_now", "id": "sample-report" } }
+{ "operation": "run_now", "id": "sample-report" }
 ```
 
-No secrets or environment configuration are added by this slice. Commands get
+Secret and environment configuration are outside the current scope. Commands get
 only the fixed system PATH. Keep real inventory, definitions, and logs in private
 operational storage, outside review artifacts and repository history.
 
@@ -152,6 +150,6 @@ clock and process fakes only at system boundaries for policy decisions. Real
 process tests verify daily/weekly dispatch at controlled clock boundaries and
 both sides of the startup crash window. CLI end-to-end tests cover manual and
 automatic execution, output/history, pause/resume, overlap/cancellation, runtime
-crashes and downtime, uncertain monitor loss, explicit acknowledgment, and
-coexistence with services. Existing service and launchd verification remains in
-the complete suite. No live workload migration is performed by these tests.
+crashes and downtime, uncertain monitor loss, and explicit acknowledgment.
+Runtime and launchd checks also verify supervision, private storage,
+authorization, bounded logs, and process containment using synthetic fixtures.

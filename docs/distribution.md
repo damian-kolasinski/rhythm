@@ -165,8 +165,7 @@ Passing a candidate rehearsal alone does not prove a published release exists.
 ## Cutover
 
 Installing a version or verifying a disposable runtime does not switch a normal
-runtime registration. After the first published release passes verification,
-cutover is a separate slice: preserve private rollback data, stop the current
-runtime, point its registration at the pinned mise installation, and verify
-services, schedules, history/logs, and UI against the same private state.
-Keep the old executable and rollback data until that verification passes.
+runtime registration. Point the registration at a stable, pinned executable and
+verify schedules, history/logs, and UI in private state. The schedules-only build
+uses schema 3; other schema versions require a fresh state directory. Installation
+does not migrate or reset previous state.

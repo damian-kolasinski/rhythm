@@ -15,34 +15,30 @@ be running. A foreground runtime and an installed runtime serve the same
 embedded interface. Reloading or opening another tab works directly at that
 URL, as in mergegate's local opening flow.
 
-The workspace shows Rhythm-owned services and schedules, observed execution
-states, desired state, latest results, upcoming automatic runs, and failures or
-uncertain completions that need inspection. It does not infer application or
-downstream task health. Read-only launchd discovery stays in the CLI; discovered
-registrations cannot be controlled from this workspace.
+The workspace shows one searchable list of schedules, with failures and uncertain
+outcomes first. Next-run timing stays visible on narrow screens. Search and state
+filters remain in place when closing an inspected schedule. Detail links use
+`#/<schedule-id>`.
 
 ## Controls and execution details
 
-- One list combines services and schedules, with failures and uncertain outcomes
-  first. Search by workload name and combine kind and state filters. Upcoming
-  runs appear in the list; narrow screens keep timing alongside status. Existing
-  service and schedule detail links remain supported.
-- Create stopped services and paused interval, daily, or weekly schedules through
-  the CLI using `service create --file FILE` or `schedule create --file FILE`.
-  Command, trigger, overlap, missed-run, and restart configuration stays in CLI
-  definitions and the read-only Definition tab. The browser has no creation form;
-  the trusted local browser API retains its existing command authority.
-- Start services; confirm stop or restart. Run schedules immediately, resume
-  automatic triggers, or confirm pause/cancel. Pausing preserves active and
-  accepted manual work; cancellation clears active and queued work without
-  disabling future triggers. Pause before cancel to keep a schedule quiescent.
-- Inspect definitions, retained history, execution outcomes, and output. Logs
-  show the last 64 KiB of each retained prefix and refresh on request. Content is
-  rendered as text. Definitions and logs can contain sensitive operational data;
-  they stay in the current tab and private runtime storage.
-- Investigate uncertain completion, manually clean up the named execution, then
-  explicitly check the acknowledgment box. Acknowledgment records that decision
-  and preserves the original outcome. It does not kill unknown processes.
+- Create paused interval, daily, or weekly schedules through the CLI using
+  `schedule create --file FILE`. Trigger, overlap, missed-run, and command settings
+  remain in CLI definitions and the read-only Definition tab.
+- Run a schedule immediately, resume automatic triggers, or confirm pause/cancel.
+  Pausing preserves active and accepted manual work. Cancellation clears active
+  and queued work while leaving future triggers enabled. Pause before cancel to
+  keep a schedule quiescent.
+- Inspect retained history, outcomes, and output. Logs show at most the last 64 KiB
+  of each retained prefix and refresh on request. Content is rendered as text.
+- Investigate uncertain completion and manually clean up the named execution
+  before checking the explicit acknowledgment box. Acknowledgment preserves the
+  outcome and pauses the schedule; it does not kill unknown processes.
+
+Execution state is process evidence. The UI does not infer application or
+downstream health. The browser has no creation form; its trusted local API can
+still create schedules. Definitions and logs stay in the current tab and private
+runtime storage.
 
 The workspace polls every two seconds while connected. It preserves keyboard
 focus across refreshes, retains its last snapshot when disconnected, and disables
@@ -88,8 +84,8 @@ warning, and error roles. Light and dark modes follow the system preference.
 Body text uses bundled DM Sans, with the same heading/body/label type scales
 and tracking. Commands and output retain the system monospace stack. The font
 is packaged locally under `web/DM-Sans-OFL.txt`, also embedded at
-`/assets/dm-sans-license.txt`; it does
-not require a font CDN. Layout and application behavior remain owned by Rhythm.
+`/assets/dm-sans-license.txt`; it does not require a font CDN. Layout and
+application behavior remain owned by Rhythm.
 
 ## Disposable demo
 
@@ -99,7 +95,7 @@ rhythm demo
 rhythm demo --no-open
 ```
 
-The demo uses temporary private state and synthetic services, schedules, and
+The demo uses temporary private state, synthetic schedules, and synthetic
 output with the real runtime and process adapters. It visibly identifies itself
 as a demo. It does not install a launchd registration or open the normal state
 directory. Stop the foreground demo with Ctrl-C; the runtime stops its work and
@@ -107,9 +103,9 @@ the temporary directory is removed. Abrupt termination can leave temporary
 state; it has the same private permissions as normal runtime storage.
 
 The checked-in browser demo test exercises the same command, including an
-expected failed service, service start/stop, schedule run-now/resume/pause, and
-logs. The recording begins by opening the direct local URL.
-All example workload names, output, and timing are synthetic.
+expected failed schedule, schedule run-now/resume/pause, and logs. The recording
+begins by opening the direct local URL. All example schedule names, output, and
+timing are synthetic.
 
 ## Build and verification
 
@@ -131,16 +127,16 @@ tests use a pinned Chromium, UTC, synthetic fixtures, isolated temporary state,
 and one worker. Run them after Cargo finishes rebuilding the binary; do not
 relink it while a real-process test is active.
 
-Rendering goldens cover light/dark palettes, bundled fonts, empty/loading/error, populated, failed,
-recovering and uncertain states, unsupported responses, mobile, confirmation,
-and literal output. Their fixtures replace only the external HTTP boundary.
+Rendering goldens cover light/dark palettes, bundled fonts, empty/loading/error,
+populated, failed, recovering and uncertain states, unsupported responses,
+mobile, confirmation, and literal output. Their fixtures replace only the
+external HTTP boundary.
 Flow tests use the real loopback server, SQLite, and process execution, including
 direct CLI-URL entry, reload/new-tab access, cross-site refusal, CLI-created
-services and interval/daily/weekly schedules, combined filters, service/schedule
-controls, cleanup acknowledgment,
-search, focus preservation, and connection loss/retry. Rust tests additionally
-check Host/Origin/client-header enforcement, bounded requests, generic
-errors, embedded assets, and demo failure cleanup.
+interval/daily/weekly schedules, search and state filters, schedule controls,
+cleanup acknowledgment, focus preservation, and connection loss/retry. Rust
+tests additionally check Host/Origin/client-header enforcement, bounded
+requests, generic errors, embedded assets, and demo failure cleanup.
 
 Generate a private demo recording and screenshot with:
 
