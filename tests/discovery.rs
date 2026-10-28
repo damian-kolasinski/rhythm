@@ -3,8 +3,10 @@ use rhythm::{
     discovery::{self, DiagnosticCode, ObservedState, Requirement, Trigger, WorkKind},
     launchd::LaunchdInventory,
 };
-use std::{fs, os::unix::fs::PermissionsExt, path::Path, process::Command};
+use std::{fs, path::Path, process::Command};
 use tempfile::TempDir;
+
+mod command_fixture;
 
 fn write_registration(directory: &Path, name: &str, label: &str, extra: &str, binary: bool) {
     let xml = format!(
@@ -21,12 +23,10 @@ fn write_registration(directory: &Path, name: &str, label: &str, extra: &str, bi
 
 fn launchctl(directory: &Path, body: &str) -> std::path::PathBuf {
     let path = directory.join("launchctl");
-    fs::write(
+    command_fixture::write(
         &path,
-        format!("#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = list ] || exit 99\n{body}\n"),
-    )
-    .unwrap();
-    fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+        &format!("#!/bin/sh\n[ \"$#\" = 1 ] && [ \"$1\" = list ] || exit 99\n{body}\n"),
+    );
     path
 }
 

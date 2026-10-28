@@ -91,6 +91,8 @@ Owned-service CLI failures exit 1; successful operations exit 0.
 The launchd adapter derives one registration label from the private directory
 and changes only a verified owned registration. Installation is idempotent;
 failed replacement attempts restore the previous registration. Missing
-ownership evidence for an already-loaded target fails closed. Uninstall retains
+ownership evidence for an already-loaded target fails closed. Failure to invoke
+the launcher returns an execution error, preserves an owned registration, and
+never counts as evidence that the target is absent. Uninstall retains
 all private execution data. `runtime stop` also shuts down a foreground API
 owner and verifies that its singleton lock has been released.
