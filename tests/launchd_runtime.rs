@@ -1,5 +1,8 @@
 #![cfg(unix)]
-use rhythm::{launchd_runtime::LaunchdRuntime, private_storage::Root, services::*};
+use rhythm::{
+    launchd_runtime::LaunchdRuntime, operation_error::Error, private_storage::Root,
+    runtime_supervision::RuntimeSupervisor,
+};
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use tempfile::TempDir;
 

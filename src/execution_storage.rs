@@ -15,45 +15,32 @@ pub(crate) fn read(
     let rows = statement
         .query_map([value], |r| {
             Ok((
-                r.get(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get(2)?,
-                r.get(3)?,
-                r.get::<_, Option<String>>(4)?,
-                r.get(5)?,
-                r.get(6)?,
-                r.get::<_, Option<String>>(7)?,
-                r.get::<_, Option<String>>(8)?,
+                r.get("id")?,
+                r.get::<_, String>("schedule_id")?,
+                r.get::<_, String>("invocation")?,
+                r.get("started_at_ms")?,
+                r.get("finished_at_ms")?,
+                r.get::<_, Option<String>>("outcome")?,
+                r.get("supervisor_pid")?,
+                r.get("recovery_acknowledged_at_ms")?,
             ))
         })
         .map_err(|_| Error::StorageUnavailable)?;
     rows.map(|r| {
         let (
             id,
-            service,
+            schedule,
+            invocation,
             started_at_ms,
             finished_at_ms,
             outcome,
             supervisor_pid,
             recovery_acknowledged_at_ms,
-            schedule,
-            invocation,
         ) = r.map_err(|_| Error::StorageUnavailable)?;
-        let parse_id = |s: String| WorkloadId::try_from(s).map_err(|_| Error::StorageUnavailable);
-        let owner = match (service, schedule, invocation) {
-            (Some(id), None, None) => ExecutionOwner::Service {
-                service_id: parse_id(id)?,
-            },
-            (None, Some(id), Some(invocation)) => ExecutionOwner::Schedule {
-                schedule_id: parse_id(id)?,
-                invocation: serde_json::from_str(&invocation)
-                    .map_err(|_| Error::StorageUnavailable)?,
-            },
-            _ => return Err(Error::StorageUnavailable),
-        };
         Ok(Execution {
             id,
-            owner,
+            schedule_id: WorkloadId::try_from(schedule).map_err(|_| Error::StorageUnavailable)?,
+            invocation: serde_json::from_str(&invocation).map_err(|_| Error::StorageUnavailable)?,
             started_at_ms,
             finished_at_ms,
             outcome: outcome

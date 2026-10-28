@@ -13,11 +13,10 @@ import type { Api } from "../api/client";
 import { errorMessage } from "../api/errors";
 import {
   logsSchema,
-  serviceDetailSchema,
   scheduleDetailSchema,
   type Execution,
 } from "../api/contracts";
-import { loadDetail, type Detail } from "../workloads/detail";
+import { loadDetail, type Detail } from "../schedules/detail";
 import {
   status,
   outcome,
@@ -25,8 +24,7 @@ import {
   timestamp,
   cadence,
   isUncertain,
-  type Kind,
-} from "../workloads/presentation";
+} from "../schedules/presentation";
 import { Dialog } from "./Dialog";
 import { Icon, type IconName } from "./Icon";
 
@@ -38,8 +36,7 @@ type Action = {
   danger?: boolean;
   ack?: number;
 };
-export function WorkDetail(props: {
-  kind: Kind;
+export function ScheduleDetail(props: {
   id: string;
   api: Api;
   offline: boolean;
@@ -47,17 +44,16 @@ export function WorkDetail(props: {
   changed: (message: string) => void;
 }) {
   const [loaded, { refetch }] = createResource(
-    () => ({ kind: props.kind, id: props.id }),
-    (key) => loadDetail(props.api, key.kind, key.id),
+    () => props.id,
+    (id) => loadDetail(props.api, id),
   );
   const [state, setState] = createStore<{ detail?: Detail }>({});
   const detail = () => state.detail;
   createEffect(() => {
     const id = props.id;
-    const kind = props.kind;
     if (loaded.error) return;
     const value = loaded();
-    if (value?.definition.id === id && value.kind === kind)
+    if (value?.definition.id === id)
       setState("detail", reconcile(value, { key: "id" }));
   });
   const [tab, setTab] = createSignal("activity");
@@ -84,7 +80,6 @@ export function WorkDetail(props: {
   });
   createEffect(() => {
     props.id;
-    props.kind;
     setState("detail", undefined);
     setError("");
     setConfirm(undefined);
@@ -102,7 +97,6 @@ export function WorkDetail(props: {
   }
   async function perform(action: Action) {
     const targetId = props.id;
-    const targetKind = props.kind;
     setBusy(true);
     setError("");
     try {
@@ -111,22 +105,14 @@ export function WorkDetail(props: {
         id: targetId,
         ...(action.ack ? { execution_id: action.ack } : {}),
       };
-      if (targetKind === "service")
-        await props.api(request, serviceDetailSchema);
-      else
-        await props.api(
-          { operation: "schedule", command: request },
-          scheduleDetailSchema,
-        );
-      if (disposed || props.id !== targetId || props.kind !== targetKind)
-        return;
+      await props.api(request, scheduleDetailSchema);
+      if (disposed || props.id !== targetId) return;
       setConfirm(undefined);
       setCleaned(false);
       props.changed(`${action.label} requested · ${targetId}`);
       await refreshDetail();
     } catch (e) {
-      if (!disposed && props.id === targetId && props.kind === targetKind)
-        setError(errorMessage(e));
+      if (!disposed && props.id === targetId) setError(errorMessage(e));
     } finally {
       if (!disposed) setBusy(false);
     }
@@ -157,7 +143,7 @@ export function WorkDetail(props: {
   const unavailable = () => props.offline || busy() || !!loaded.error;
   const blocked = () =>
     ["needs_attention", "recovering"].includes(
-      detail()?.value.observed.state ?? "",
+      detail()?.schedule.observed.state ?? "",
     );
   function button(
     label: string,
@@ -187,7 +173,7 @@ export function WorkDetail(props: {
         }}
         class="detail-dialog"
       >
-        <p class="eyebrow">RHYTHM-OWNED {props.kind.toUpperCase()}</p>
+        <p class="eyebrow">SCHEDULE</p>
         <h2>{props.id}</h2>
         <Show
           when={detail()}
@@ -195,7 +181,7 @@ export function WorkDetail(props: {
             <div class="detail-loading">
               {loaded.error ? (
                 <div role="alert">
-                  <h3>Couldn’t open this workload</h3>
+                  <h3>Couldn’t open this schedule</h3>
                   <p>{errorMessage(loaded.error)}</p>
                   <button class="button" onClick={() => void refreshDetail()}>
                     Retry
@@ -208,30 +194,9 @@ export function WorkDetail(props: {
           }
         >
           {(data) => {
-            const item = () => ({ kind: data().kind, value: data().value });
-            const state = () => status(item());
-            const enabled = () => {
-              const v = data().value;
-              return "enabled" in v && v.enabled;
-            };
-            const hasPending = () => {
-              const v = data().value;
-              return "pending" in v && v.pending !== null;
-            };
-            const desiredLabel = () => {
-              const v = data().value;
-              return "desired" in v
-                ? v.desired
-                : v.enabled
-                  ? "Enabled"
-                  : "Paused";
-            };
-            const nextLabel = () => {
-              const v = data().value;
-              return "next_run_at_ms" in v
-                ? when(v.next_run_at_ms)
-                : outcome(v.latest_execution);
-            };
+            const state = () => status(data().schedule);
+            const enabled = () => data().schedule.enabled;
+            const hasPending = () => data().schedule.pending !== null;
             return (
               <>
                 <div class="detail-status">
@@ -240,19 +205,17 @@ export function WorkDetail(props: {
                     {state().label}
                   </span>
                   <span class="subtle">
-                    {data().kind === "service"
-                      ? "Execution state · application health not reported"
-                      : "Finite executions · explicit trigger policies"}
+                    {cadence(data().definition.trigger)}
                   </span>
                 </div>
-                <Show when={isUncertain(data().value.latest_execution)}>
+                <Show when={isUncertain(data().schedule.latest_execution)}>
                   <div class="attention-message">
                     <Icon name="alert" />
                     <div>
                       <strong>Completion is uncertain</strong>
                       <p>
                         New work is blocked. Inspect and manually clean up
-                        execution #{data().value.latest_execution!.id} before
+                        execution #{data().schedule.latest_execution!.id} before
                         acknowledging it.
                       </p>
                       <button
@@ -263,9 +226,9 @@ export function WorkDetail(props: {
                             operation: "acknowledge",
                             title: "Acknowledge cleanup?",
                             description:
-                              "This records your confirmation, preserves the original outcome, and leaves the workload stopped or paused. It does not terminate unknown processes.",
+                              "This records your confirmation, preserves the original outcome, and pauses the schedule. It does not terminate unknown processes.",
                             label: "Acknowledge cleanup",
-                            ack: data().value.latest_execution!.id,
+                            ack: data().schedule.latest_execution!.id,
                           })
                         }
                       >
@@ -276,107 +239,59 @@ export function WorkDetail(props: {
                   </div>
                 </Show>
                 <div class="detail-actions">
-                  <Show
-                    when={data().kind === "service"}
-                    fallback={
-                      <>
-                        {button(
-                          "Run now",
-                          "play",
-                          {
-                            operation: "run_now",
-                            title: "",
-                            description: "",
-                            label: "Run now",
-                          },
-                          false,
-                          blocked(),
-                          true,
-                        )}
-                        {enabled()
-                          ? button(
-                              "Pause",
-                              "pause",
-                              {
-                                operation: "pause",
-                                title: "Pause this schedule?",
-                                description:
-                                  "Future triggers and queued automatic work will stop. Active and accepted manual runs can finish.",
-                                label: "Pause",
-                              },
-                              true,
-                            )
-                          : button(
-                              "Resume",
-                              "play",
-                              {
-                                operation: "resume",
-                                title: "",
-                                description: "",
-                                label: "Resume",
-                              },
-                              false,
-                              blocked(),
-                            )}
-                        {button(
-                          "Cancel run",
-                          "stop",
-                          {
-                            operation: "cancel",
-                            title: "Cancel active and queued work?",
-                            description:
-                              "The active process group will stop and queued work will be cleared. Future automatic triggers remain enabled unless you pause them.",
-                            label: "Cancel run",
-                            danger: true,
-                          },
-                          true,
-                          data().value.observed.state !== "running" &&
-                            !hasPending(),
-                        )}
-                      </>
-                    }
-                  >
-                    {button(
-                      "Start",
-                      "play",
-                      {
-                        operation: "start",
-                        title: "",
-                        description: "",
-                        label: "Start",
-                      },
-                      false,
-                      blocked() || data().value.observed.state === "running",
-                      true,
-                    )}
-                    {button(
-                      "Stop",
-                      "stop",
-                      {
-                        operation: "stop",
-                        title: "Stop this service?",
-                        description:
-                          "The active process group will stop. Desired state becomes stopped and automatic retries are disabled.",
-                        label: "Stop",
-                        danger: true,
-                      },
-                      true,
-                      data().value.observed.state === "stopped",
-                    )}
-                    {button(
-                      "Restart",
-                      "refresh",
-                      {
-                        operation: "restart",
-                        title: "Restart this service?",
-                        description:
-                          "The current execution will stop before a replacement starts. This may interrupt work in progress.",
-                        label: "Restart",
-                      },
-                      true,
-                      blocked(),
-                    )}
-                  </Show>
+                  {button(
+                    "Run now",
+                    "play",
+                    {
+                      operation: "run_now",
+                      title: "",
+                      description: "",
+                      label: "Run now",
+                    },
+                    false,
+                    blocked(),
+                    true,
+                  )}
+                  {enabled()
+                    ? button(
+                        "Pause",
+                        "pause",
+                        {
+                          operation: "pause",
+                          title: "Pause this schedule?",
+                          description:
+                            "Future triggers and queued automatic work will stop. Active and accepted manual runs can finish.",
+                          label: "Pause",
+                        },
+                        true,
+                      )
+                    : button(
+                        "Resume",
+                        "play",
+                        {
+                          operation: "resume",
+                          title: "",
+                          description: "",
+                          label: "Resume",
+                        },
+                        false,
+                        blocked(),
+                      )}
+                  {button(
+                    "Cancel run",
+                    "stop",
+                    {
+                      operation: "cancel",
+                      title: "Cancel active and queued work?",
+                      description:
+                        "The active process group will stop and queued work will be cleared. Future automatic triggers remain enabled unless you pause them.",
+                      label: "Cancel run",
+                      danger: true,
+                    },
+                    true,
+                    data().schedule.observed.state !== "running" &&
+                      !hasPending(),
+                  )}
                 </div>
                 <Show when={loaded.error}>
                   <p class="form-error" role="alert">
@@ -391,7 +306,7 @@ export function WorkDetail(props: {
                 <div
                   class="detail-tabs"
                   role="tablist"
-                  aria-label="Workload details"
+                  aria-label="Schedule details"
                   onKeyDown={(e) => {
                     if (
                       !["ArrowLeft", "ArrowRight", "Home", "End"].includes(
@@ -445,20 +360,12 @@ export function WorkDetail(props: {
                   >
                     <div class="detail-facts">
                       <div>
-                        <span>
-                          {data().kind === "service"
-                            ? "Desired state"
-                            : "Automatic triggers"}
-                        </span>
-                        <strong>{desiredLabel()}</strong>
+                        <span>Automatic triggers</span>
+                        <strong>{enabled() ? "Enabled" : "Paused"}</strong>
                       </div>
                       <div>
-                        <span>
-                          {data().kind === "service"
-                            ? "Latest result"
-                            : "Next automatic run"}
-                        </span>
-                        <strong>{nextLabel()}</strong>
+                        <span>Next automatic run</span>
+                        <strong>{when(data().schedule.next_run_at_ms)}</strong>
                       </div>
                     </div>
                     <Show when={hasPending()}>
@@ -479,11 +386,7 @@ export function WorkDetail(props: {
                         <div class="empty-activity">
                           <Icon name="clock" />
                           <h3>No executions yet</h3>
-                          <p>
-                            {data().kind === "service"
-                              ? "Start this service to begin its history."
-                              : "Run it now, or resume automatic triggers."}
-                          </p>
+                          <p>Run it now, or resume automatic triggers.</p>
                         </div>
                       }
                     >
@@ -591,7 +494,7 @@ export function WorkDetail(props: {
             </Show>
             <Show when={loaded.error}>
               <p class="form-error" role="alert">
-                The workload detail could not refresh. Controls are disabled
+                The schedule detail could not refresh. Controls are disabled
                 until it reconnects.{" "}
                 <button
                   class="text-button"
@@ -646,63 +549,31 @@ function Definition(props: { data: Detail }) {
           <code>{props.data.definition.working_directory}</code>
         </dd>
       </dl>
-      <Show
-        when={props.data.kind === "service"}
-        fallback={
-          <Show when={"trigger" in props.data.definition}>
-            <h3>
-              <Icon name="clock" />
-              Timing & policies
-            </h3>
-            <dl>
-              <dt>Trigger</dt>
-              <dd>
-                {"trigger" in props.data.definition
-                  ? cadence(props.data.definition.trigger)
-                  : ""}
-              </dd>
-              <dt>Overlap</dt>
-              <dd>
-                {"overlap" in props.data.definition &&
-                props.data.definition.overlap === "skip"
-                  ? "Skip when busy"
-                  : "Queue one latest run"}
-              </dd>
-              <dt>Missed runs</dt>
-              <dd>
-                {"missed" in props.data.definition &&
-                props.data.definition.missed === "skip"
-                  ? "Skip expired occurrences"
-                  : "Catch up once"}
-              </dd>
-              <dt>Grace window</dt>
-              <dd>
-                {"grace_ms" in props.data.definition
-                  ? `${props.data.definition.grace_ms} ms`
-                  : ""}
-              </dd>
-            </dl>
-          </Show>
-        }
-      >
-        <dl>
-          <dt>Restart policy</dt>
-          <dd>
-            {"restart" in props.data.definition
-              ? props.data.definition.restart.replaceAll("_", " ")
-              : ""}
-          </dd>
-          <dt>Restart delay</dt>
-          <dd>
-            {"restart_delay_ms" in props.data.definition
-              ? `${props.data.definition.restart_delay_ms} ms`
-              : ""}
-          </dd>
-        </dl>
-      </Show>
+      <h3>
+        <Icon name="clock" />
+        Timing & policies
+      </h3>
+      <dl>
+        <dt>Trigger</dt>
+        <dd>{cadence(props.data.definition.trigger)}</dd>
+        <dt>Overlap</dt>
+        <dd>
+          {props.data.definition.overlap === "skip"
+            ? "Skip when busy"
+            : "Queue one latest run"}
+        </dd>
+        <dt>Missed runs</dt>
+        <dd>
+          {props.data.definition.missed === "skip"
+            ? "Skip expired occurrences"
+            : "Catch up once"}
+        </dd>
+        <dt>Grace window</dt>
+        <dd>{props.data.definition.grace_ms} ms</dd>
+      </dl>
       <p class="field-note">
         Commands receive the fixed system PATH. Arguments are literal; a shell
-        runs only when explicitly configured. This workload belongs to Rhythm.
+        runs only when explicitly configured. This schedule belongs to Rhythm.
       </p>
     </div>
   );

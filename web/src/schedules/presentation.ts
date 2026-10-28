@@ -1,6 +1,4 @@
-import type { Execution, Service, Schedule, Trigger } from "../api/contracts";
-export type Kind = "service" | "schedule";
-export type Item = { kind: Kind; value: Service | Schedule };
+import type { Execution, Schedule, Trigger } from "../api/contracts";
 export function isUncertain(execution: Execution | null): boolean {
   return (
     !!execution &&
@@ -24,30 +22,23 @@ export function failed(execution: Execution | null): boolean {
         ].includes(o.type))
   );
 }
-export function needsAttention(item: Item): boolean {
+export function needsAttention(schedule: Schedule): boolean {
   return (
-    item.value.observed.state === "needs_attention" ||
-    failed(item.value.latest_execution)
+    schedule.observed.state === "needs_attention" ||
+    failed(schedule.latest_execution)
   );
 }
-export function status(item: Item): { label: string; tone: string } {
-  const state = item.value.observed.state;
+export function status(schedule: Schedule): { label: string; tone: string } {
+  const state = schedule.observed.state;
   if (state === "needs_attention")
     return { label: "Needs attention", tone: "danger" };
   if (state === "running") return { label: "Running", tone: "green" };
   if (state === "recovering") return { label: "Recovering", tone: "amber" };
-  if (state === "waiting") return { label: "Retry queued", tone: "amber" };
-  if (failed(item.value.latest_execution))
+  if (failed(schedule.latest_execution))
     return { label: "Failed", tone: "danger" };
-  if (item.kind === "service")
-    return {
-      label:
-        (item.value as Service).desired === "stopped" ? "Stopped" : "Exited",
-      tone: "muted",
-    };
   return {
-    label: (item.value as Schedule).enabled ? "Scheduled" : "Paused",
-    tone: (item.value as Schedule).enabled ? "blue" : "muted",
+    label: schedule.enabled ? "Scheduled" : "Paused",
+    tone: schedule.enabled ? "blue" : "muted",
   };
 }
 export function outcome(execution: Execution | null): string {
@@ -107,13 +98,4 @@ export function cadence(trigger: Trigger): string {
   const time = `${String(trigger.hour).padStart(2, "0")}:${String(trigger.minute).padStart(2, "0")}`;
   const days = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   return `${trigger.type === "daily" ? "Daily" : trigger.weekdays.map((d) => days[d]).join(", ")} at ${time} · ${trigger.timezone}`;
-}
-export function parseArguments(text: string): string[] {
-  return text === "" ? [] : text.split(/\r?\n/);
-}
-export function items(services: Service[], schedules: Schedule[]): Item[] {
-  return [
-    ...services.map((value) => ({ kind: "service" as const, value })),
-    ...schedules.map((value) => ({ kind: "schedule" as const, value })),
-  ];
 }

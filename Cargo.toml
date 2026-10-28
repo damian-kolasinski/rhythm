@@ -3,7 +3,7 @@ name = "rhythm"
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.99"
-description = "Discover and manage background work on one machine"
+description = "Run and inspect persistent schedules on one machine"
 
 [dependencies]
 axum = "0.8.9"

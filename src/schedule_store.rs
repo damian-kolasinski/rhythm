@@ -1,9 +1,9 @@
 //! Schedule persistence adapter. Cursor/pending updates precede dispatch durably.
 use crate::{
     execution_records::*,
+    operation_error::{Error, Result},
     private_storage::Root,
     schedules::*,
-    services::{Error, Result},
 };
 use rusqlite::{Connection, params};
 pub struct SqliteScheduleStore(Connection);
@@ -115,7 +115,7 @@ impl ScheduleStore for SqliteScheduleStore {
     fn active(&self) -> Result<Vec<Execution>> {
         crate::execution_storage::read(
             &self.0,
-            "SELECT * FROM executions WHERE schedule_id IS NOT NULL AND finished_at_ms IS NULL AND ?1=1",
+            "SELECT * FROM executions WHERE finished_at_ms IS NULL AND ?1=1",
             1.into(),
         )
     }

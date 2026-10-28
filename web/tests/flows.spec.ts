@@ -2,7 +2,7 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { test, expect } from "@playwright/test";
-import { Runtime, service, schedule, waitForValue } from "./runtime";
+import { Runtime, schedule, waitForValue } from "./runtime";
 let runtime: Runtime;
 test.beforeEach(async () => {
   runtime = await Runtime.start();
@@ -23,11 +23,11 @@ test("open the CLI URL directly, reload, and open another tab without pairing", 
   });
   await page.goto(launch.url);
   await expect(
-    page.getByRole("heading", { name: "Background work, in view." }),
+    page.getByRole("heading", { name: "Schedules", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "New service", exact: true }),
-  ).toBeEnabled();
+    page.getByText("No schedules yet.", { exact: true }),
+  ).toBeVisible();
   expect(
     await page.evaluate(() => ({
       session: sessionStorage.length,
@@ -38,15 +38,15 @@ test("open the CLI URL directly, reload, and open another tab without pairing", 
   expect(credentials).toEqual([]);
   await page.reload();
   await expect(
-    page.getByRole("button", { name: "New schedule", exact: true }),
-  ).toBeEnabled();
+    page.getByText("No schedules yet.", { exact: true }),
+  ).toBeVisible();
   const context = await browser.newContext();
   try {
     const second = await context.newPage();
     await second.goto(launch.url);
     await expect(
-      second.getByRole("button", { name: "New service", exact: true }),
-    ).toBeEnabled();
+      second.getByText("No schedules yet.", { exact: true }),
+    ).toBeVisible();
   } finally {
     await context.close();
   }
@@ -61,30 +61,29 @@ test("open the CLI URL directly, reload, and open another tab without pairing", 
   expect(refused).toBe(401);
 });
 
-test("create service, start, inspect literal logs, cancel restart, restart, and stop", async ({
+test("CLI-created schedule runs with literal logs and explicit cancellation", async ({
   page,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  await runtime.create(
+    schedule(
+      "sample-output",
+      'printf "<img src=x onerror=alert(1)>"; exec sleep 30',
+    ),
+  );
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New service", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New service" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-ui-service");
-  await form.getByLabel("Executable", { exact: true }).fill("/bin/sh");
-  await form
-    .getByLabel("Arguments")
-    .fill('-c\nprintf "<img src=x onerror=alert(1)>"; exec sleep 30');
-  await form
-    .getByRole("button", { name: "Create service", exact: true })
-    .click();
+  await expect(
+    page.getByRole("button", {
+      name: /New service|Add service|Create schedule/,
+    }),
+  ).toHaveCount(0);
+  await page.getByRole("link", { name: "Inspect sample-output" }).click();
   const detail = page.getByRole("dialog", {
-    name: "sample-ui-service",
+    name: "sample-output",
     exact: true,
   });
-  await expect(
-    detail.getByText("Stopped", { exact: true }).first(),
-  ).toBeVisible();
-  await detail.getByRole("button", { name: "Start", exact: true }).click();
+  await detail.getByRole("button", { name: "Run now", exact: true }).click();
   await expect(detail.locator(".status")).toHaveText("Running");
   await detail
     .getByRole("button", { name: /View logs for execution/ })
@@ -94,49 +93,39 @@ test("create service, start, inspect literal logs, cancel restart, restart, and 
     "<img src=x onerror=alert(1)>",
   );
   await expect(detail.getByTestId("stdout").locator("img")).toHaveCount(0);
-  const before = await runtime.command({
-    operation: "history",
-    id: "sample-ui-service",
+  await detail.getByRole("button", { name: "Cancel run", exact: true }).click();
+  let confirm = page.getByRole("dialog", {
+    name: "Cancel active and queued work?",
   });
-  await detail.getByRole("button", { name: "Restart", exact: true }).click();
-  let confirm = page.getByRole("dialog", { name: "Restart this service?" });
   await confirm.getByRole("button", { name: "Keep as is" }).click();
   expect(
-    (await runtime.command({ operation: "history", id: "sample-ui-service" }))
-      .executions.length,
-  ).toBe(before.executions.length);
-  await detail.getByRole("button", { name: "Restart", exact: true }).click();
-  confirm = page.getByRole("dialog", { name: "Restart this service?" });
-  await confirm.getByRole("button", { name: "Restart", exact: true }).click();
-  await waitForValue(
-    () => runtime.command({ operation: "history", id: "sample-ui-service" }),
-    (v) => v.executions.length === 2,
-  );
-  await detail.getByRole("button", { name: "Stop", exact: true }).click();
-  await page
-    .getByRole("dialog", { name: "Stop this service?" })
-    .getByRole("button", { name: "Stop", exact: true })
+    (await runtime.command({ operation: "history", id: "sample-output" }))
+      .executions,
+  ).toHaveLength(1);
+  await expect(detail.locator(".status")).toHaveText("Running");
+  await detail.getByRole("button", { name: "Cancel run", exact: true }).click();
+  confirm = page.getByRole("dialog", {
+    name: "Cancel active and queued work?",
+  });
+  await confirm
+    .getByRole("button", { name: "Cancel run", exact: true })
     .click();
-  await expect(detail.locator(".status")).toHaveText("Stopped");
+  await expect(detail.locator(".status")).toHaveText("Paused");
   expect(errors).toEqual([]);
 });
 
-test("create schedule, run now, history, resume, pause, and cancel queued work", async ({
+test("CLI-created schedule can run now, show history, resume, pause, and cancel queued work", async ({
   page,
 }) => {
+  await runtime.create(
+    schedule(
+      "sample-ui-schedule",
+      "printf schedule-output; exec sleep 30",
+      500,
+    ),
+  );
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New schedule" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-ui-schedule");
-  await form.getByLabel("Executable", { exact: true }).fill("/bin/sh");
-  await form
-    .getByLabel("Arguments")
-    .fill("-c\nprintf schedule-output; exec sleep 30");
-  await form.getByLabel("Every (seconds)").fill("0.5");
-  await form.getByLabel("When already running").selectOption("queue_one");
-  await form
-    .getByRole("button", { name: "Create schedule", exact: true })
-    .click();
+  await page.getByRole("link", { name: "Inspect sample-ui-schedule" }).click();
   const detail = page.getByRole("dialog", {
     name: "sample-ui-schedule",
     exact: true,
@@ -168,35 +157,40 @@ test("create schedule, run now, history, resume, pause, and cancel queued work",
     .click();
   await expect(detail.locator(".status")).toHaveText("Paused");
   const stored = await runtime.command({
-    operation: "schedule",
-    command: { operation: "inspect", id: "sample-ui-schedule" },
+    operation: "inspect",
+    id: "sample-ui-schedule",
   });
-  expect(stored.response.schedule.enabled).toBe(false);
-  expect(stored.response.schedule.pending).toBeNull();
+  expect(stored.schedule.enabled).toBe(false);
+  expect(stored.schedule.pending).toBeNull();
 });
 
-test("daily and weekly creation, search filters, keyboard focus, responsive detail", async ({
+test("CLI calendar definitions, combined filters, keyboard focus, and responsive detail", async ({
   page,
 }) => {
   await runtime.command({
     operation: "create",
-    definition: service("sample-find"),
+    definition: schedule("sample-find"),
   });
   await runtime.command({
-    operation: "schedule",
-    command: { operation: "create", definition: schedule("sample-hidden") },
+    operation: "create",
+    definition: schedule("sample-hidden"),
+  });
+  await runtime.create({
+    ...schedule("sample-weekly"),
+    trigger: {
+      type: "weekly",
+      weekdays: [1, 5],
+      hour: 9,
+      minute: 15,
+      timezone: "UTC",
+    },
+  });
+  await runtime.create({
+    ...schedule("sample-daily"),
+    trigger: { type: "daily", hour: 18, minute: 30, timezone: "UTC" },
   });
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New schedule" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-weekly");
-  await form.getByLabel("Trigger", { exact: true }).selectOption("weekly");
-  await form.getByLabel("Time", { exact: true }).fill("09:15");
-  await form.getByLabel("IANA timezone").fill("UTC");
-  await form.getByLabel("Fri", { exact: true }).check();
-  await form
-    .getByRole("button", { name: "Create schedule", exact: true })
-    .click();
+  await page.getByRole("link", { name: "Inspect sample-weekly" }).click();
   let detail = page.getByRole("dialog", { name: "sample-weekly", exact: true });
   await detail.getByRole("tab", { name: "Activity", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
@@ -214,32 +208,31 @@ test("daily and weekly creation, search filters, keyboard focus, responsive deta
   await expect(
     detail.getByRole("tab", { name: "Definition", exact: true }),
   ).toBeFocused();
-  await expect(detail.getByText("Mon, Fri at 09:15 · UTC")).toBeVisible();
+  await expect(
+    detail
+      .getByRole("tabpanel", { name: "Definition", exact: true })
+      .getByText("Mon, Fri at 09:15 · UTC"),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(detail).toHaveCount(0);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const daily = page.getByRole("dialog", { name: "New schedule" });
-  await daily.getByLabel("Name", { exact: false }).fill("sample-daily");
-  await daily.getByLabel("Trigger", { exact: true }).selectOption("daily");
-  await daily.getByLabel("Time", { exact: true }).fill("18:30");
-  await daily.getByLabel("IANA timezone").fill("UTC");
-  await daily
-    .getByRole("button", { name: "Create schedule", exact: true })
-    .click();
+  await page.getByRole("link", { name: "Inspect sample-daily" }).click();
   detail = page.getByRole("dialog", { name: "sample-daily", exact: true });
   await detail.getByRole("tab", { name: "Definition", exact: true }).click();
-  await expect(detail.getByText("Daily at 18:30 · UTC")).toBeVisible();
+  await expect(
+    detail
+      .getByRole("tabpanel", { name: "Definition", exact: true })
+      .getByText("Daily at 18:30 · UTC"),
+  ).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(detail).toHaveCount(0);
-  await page.getByRole("link", { name: "Overview", exact: true }).click();
-  await page.getByRole("searchbox", { name: "Search work" }).fill("find");
+  await page.getByRole("searchbox", { name: "Search schedules" }).fill("find");
   await expect(
     page.getByRole("link", { name: "Inspect sample-find" }),
   ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Inspect sample-hidden" }),
   ).toHaveCount(0);
-  await page.getByRole("searchbox", { name: "Search work" }).fill("");
+  await page.getByRole("searchbox", { name: "Search schedules" }).fill("");
   await page.getByRole("link", { name: "Inspect sample-find" }).focus();
   await page.waitForTimeout(2400);
   await expect(
@@ -250,7 +243,7 @@ test("daily and weekly creation, search filters, keyboard focus, responsive deta
   detail = page.getByRole("dialog", { name: "sample-find", exact: true });
   await expect(detail).toBeVisible();
   await expect(
-    detail.getByRole("button", { name: "Start", exact: true }),
+    detail.getByRole("button", { name: "Run now", exact: true }),
   ).toBeVisible();
   expect(
     await page.evaluate(
@@ -259,14 +252,62 @@ test("daily and weekly creation, search filters, keyboard focus, responsive deta
   ).toBe(true);
 });
 
+test("schedule detail links reload and preserve in-session search and state filters", async ({
+  page,
+}) => {
+  await runtime.create(schedule("sample-linked"));
+  await runtime.connect(page);
+  await expect(page.getByRole("combobox", { name: "Filter kind" })).toHaveCount(
+    0,
+  );
+  await page
+    .getByRole("combobox", { name: "Filter state" })
+    .selectOption("paused");
+  await page
+    .getByRole("searchbox", { name: "Search schedules" })
+    .fill("LINKED");
+  await page.getByRole("link", { name: "Inspect sample-linked" }).click();
+  const detail = page.getByRole("dialog", {
+    name: "sample-linked",
+    exact: true,
+  });
+  await expect(
+    detail.getByRole("button", { name: "Run now", exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.getByRole("button", { name: /Start|Restart|Stop/, exact: true }),
+  ).toHaveCount(0);
+  await page.keyboard.press("Escape");
+  await expect(detail).toHaveCount(0);
+  await expect(
+    page.getByRole("combobox", { name: "Filter state" }),
+  ).toHaveValue("paused");
+  await expect(
+    page.getByRole("searchbox", { name: "Search schedules" }),
+  ).toHaveValue("LINKED");
+  await page.goto(`${runtime.origin}/#/sample-linked`);
+  await expect(detail).toBeVisible();
+  await page.reload();
+  await expect(detail).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(detail).toHaveCount(0);
+  await page
+    .getByRole("searchbox", { name: "Search schedules" })
+    .fill("missing");
+  await expect(
+    page.getByText("No schedules match these filters."),
+  ).toBeVisible();
+  await expect(page.getByText("No schedules yet.")).toHaveCount(0);
+});
+
 test("uncertain completion blocks new work until explicit cleanup acknowledgement", async ({
   page,
 }) => {
   const id = "sample-uncertain";
-  const definition = service(id, "echo $$ > leader.pid; exec sleep 30");
+  const definition = schedule(id, "echo $$ > leader.pid; exec sleep 30");
   definition.working_directory = runtime.dir;
   await runtime.command({ operation: "create", definition });
-  await runtime.command({ operation: "start", id });
+  await runtime.command({ operation: "run_now", id });
   const history = await waitForValue(
     () => runtime.command({ operation: "history", id }),
     (v) => v.executions[0]?.supervisor_pid,
@@ -293,7 +334,7 @@ test("uncertain completion blocks new work until explicit cleanup acknowledgemen
     const detail = page.getByRole("dialog", { name: id, exact: true });
     await expect(detail.getByText("Completion is uncertain")).toBeVisible();
     await expect(
-      detail.getByRole("button", { name: "Start", exact: true }),
+      detail.getByRole("button", { name: "Run now", exact: true }),
     ).toBeDisabled();
     await detail
       .getByRole("button", { name: "Acknowledge cleanup", exact: true })
@@ -315,7 +356,7 @@ test("uncertain completion blocks new work until explicit cleanup acknowledgemen
       .click();
     await expect(detail.getByText("Completion is uncertain")).toHaveCount(0);
     await expect(
-      detail.getByRole("button", { name: "Start", exact: true }),
+      detail.getByRole("button", { name: "Run now", exact: true }),
     ).toBeEnabled();
     const after = await runtime.command({ operation: "history", id });
     expect(after.executions[0].outcome.type).toBe("monitor_lost");
@@ -332,46 +373,38 @@ test("lost connection retains the snapshot, disables mutations, and recovers on 
 }) => {
   await runtime.command({
     operation: "create",
-    definition: service("sample-offline"),
+    definition: schedule("sample-offline"),
   });
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New service", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New service" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-blocked");
-  await page.route("**/v1/browser/command", (r) => r.abort());
-  await expect(form.getByRole("alert")).toContainText("Connection lost");
-  await expect(
-    form.getByRole("button", { name: "Create service", exact: true }),
-  ).toBeDisabled();
-  await form.getByLabel("Name", { exact: false }).press("Enter");
-  expect((await runtime.command({ operation: "list" })).services).toHaveLength(
-    1,
-  );
-  await form.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(form).toHaveCount(0);
-  await page.getByRole("button", { name: "Refresh workspace" }).click();
-  await expect(page.getByRole("alert")).toContainText("last snapshot");
-  await expect(
-    page.getByRole("button", { name: "New service", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Add service", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Add schedule", exact: true }),
-  ).toBeDisabled();
   await page.getByRole("link", { name: "Inspect sample-offline" }).click();
-  await expect(page.getByRole("dialog").getByRole("alert")).toBeVisible();
+  const detail = page.getByRole("dialog", {
+    name: "sample-offline",
+    exact: true,
+  });
+  await expect(
+    detail.getByRole("button", { name: "Run now", exact: true }),
+  ).toBeEnabled();
+  await page.route("**/v1/browser/command", (r) => r.abort());
+  await expect(
+    detail.getByRole("button", { name: "Run now", exact: true }),
+  ).toBeDisabled();
+  await expect(detail.getByRole("alert")).toContainText("could not refresh");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.unroute("**/v1/browser/command");
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(detail).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("last snapshot");
   await expect(
     page.getByRole("link", { name: "Inspect sample-offline" }),
   ).toBeVisible();
+  expect(
+    (await runtime.command({ operation: "history", id: "sample-offline" }))
+      .executions,
+  ).toHaveLength(0);
+  await page.unroute("**/v1/browser/command");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("link", { name: "Inspect sample-offline" }).click();
   await expect(
-    page.getByRole("button", { name: "New service", exact: true }),
+    detail.getByRole("button", { name: "Run now", exact: true }),
   ).toBeEnabled();
 });
 
@@ -382,7 +415,7 @@ test("detail failures stay retryable and accepted commands are not reported as f
   page.on("pageerror", (error) => errors.push(error.message));
   await runtime.command({
     operation: "create",
-    definition: service("sample-detail"),
+    definition: schedule("sample-detail", "exec sleep 30"),
   });
   await runtime.connect(page);
   let failDetail = true;
@@ -401,21 +434,21 @@ test("detail failures stay retryable and accepted commands are not reported as f
     exact: true,
   });
   await expect(detail.getByRole("alert")).toContainText(
-    "Couldn’t open this workload",
+    "Couldn’t open this schedule",
   );
   failDetail = false;
   await detail.getByRole("button", { name: "Retry", exact: true }).click();
   await expect(
-    detail.getByRole("button", { name: "Start", exact: true }),
+    detail.getByRole("button", { name: "Run now", exact: true }),
   ).toBeEnabled();
   failDetail = true;
-  await detail.getByRole("button", { name: "Start", exact: true }).click();
-  await expect(page.locator(".toast")).toContainText("Start requested");
+  await detail.getByRole("button", { name: "Run now", exact: true }).click();
+  await expect(page.locator(".toast")).toContainText("Run now requested");
   await expect(detail.getByRole("alert")).toContainText(
     "This detail could not refresh",
   );
   await expect(
-    detail.getByRole("button", { name: "Restart", exact: true }),
+    detail.getByRole("button", { name: "Cancel run", exact: true }),
   ).toBeDisabled();
   const accepted = await waitForValue(
     () => runtime.command({ operation: "history", id: "sample-detail" }),
@@ -424,13 +457,15 @@ test("detail failures stay retryable and accepted commands are not reported as f
   expect(accepted.executions).toHaveLength(1);
   failDetail = false;
   await expect(
-    detail.getByRole("button", { name: "Restart", exact: true }),
+    detail.getByRole("button", { name: "Cancel run", exact: true }),
   ).toBeEnabled();
-  await detail.getByRole("button", { name: "Restart", exact: true }).click();
-  const confirm = page.getByRole("dialog", { name: "Restart this service?" });
+  await detail.getByRole("button", { name: "Cancel run", exact: true }).click();
+  const confirm = page.getByRole("dialog", {
+    name: "Cancel active and queued work?",
+  });
   failDetail = true;
   await expect(
-    confirm.getByRole("button", { name: "Restart", exact: true }),
+    confirm.getByRole("button", { name: "Cancel run", exact: true }),
   ).toBeDisabled();
   await expect(confirm.getByRole("alert")).toContainText(
     "Controls are disabled",
@@ -438,7 +473,7 @@ test("detail failures stay retryable and accepted commands are not reported as f
   failDetail = false;
   await confirm.getByRole("button", { name: "Retry detail" }).click();
   await expect(
-    confirm.getByRole("button", { name: "Restart", exact: true }),
+    confirm.getByRole("button", { name: "Cancel run", exact: true }),
   ).toBeEnabled();
   await confirm.getByRole("button", { name: "Keep as is" }).click();
   expect(errors).toEqual([]);
@@ -473,11 +508,11 @@ test("foreign browser origins cannot invoke local workload controls", async ({
           return "blocked";
         }
       },
-      { origin: runtime.origin, definition: service("sample-cross-origin") },
+      { origin: runtime.origin, definition: schedule("sample-cross-origin") },
     );
     expect(result).toBe("blocked");
     expect(
-      (await runtime.command({ operation: "list" })).services,
+      (await runtime.command({ operation: "list" })).schedules,
     ).toHaveLength(0);
   } finally {
     await new Promise<void>((resolve, reject) =>

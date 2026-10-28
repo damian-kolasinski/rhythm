@@ -1,6 +1,6 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,19 @@ export class Runtime {
     if (!response.ok) throw new Error("Fixture request failed");
     return response.json();
   }
+  async create(definition: { id: string; [field: string]: unknown }) {
+    const file = join(this.dir, "schedule-definition.json");
+    await writeFile(file, JSON.stringify(definition), { mode: 0o600 });
+    await execute(binary, [
+      "--json",
+      "--data-dir",
+      join(this.dir, "state"),
+      "schedule",
+      "create",
+      "--file",
+      file,
+    ]);
+  }
   async launch(): Promise<{ url: string; demo: boolean }> {
     const out = await execute(binary, [
       "--json",
@@ -70,7 +83,7 @@ export class Runtime {
     const launch = await this.launch();
     await page.goto(launch.url);
     await page
-      .getByRole("heading", { name: "Background work, in view." })
+      .getByRole("heading", { name: "Schedules", exact: true })
       .waitFor();
   }
   async stop() {
@@ -93,19 +106,6 @@ export class Runtime {
     }
     await rm(this.dir, { recursive: true, force: true });
   }
-}
-export function service(
-  id: string,
-  script = "exec sleep 30",
-  restart = "never",
-) {
-  return {
-    id,
-    command: ["/bin/sh", "-c", script],
-    working_directory: "/tmp",
-    restart,
-    restart_delay_ms: 1000,
-  };
 }
 export function schedule(
   id: string,

@@ -1,7 +1,7 @@
 //! Credentials exist only in private runtime discovery storage, never in URLs.
 use crate::{
+    operation_error::{Error, Result},
     private_storage::{self, Root},
-    services::*,
 };
 use serde::{Deserialize, Serialize};
 

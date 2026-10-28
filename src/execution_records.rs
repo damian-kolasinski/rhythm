@@ -19,8 +19,8 @@ impl Outcome {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Execution {
     pub id: ExecutionId,
-    #[serde(flatten)]
-    pub owner: ExecutionOwner,
+    pub schedule_id: crate::workload_id::WorkloadId,
+    pub invocation: Invocation,
     pub started_at_ms: i64,
     pub finished_at_ms: Option<i64>,
     pub outcome: Option<Outcome>,
@@ -34,25 +34,6 @@ impl Execution {
                 .outcome
                 .as_ref()
                 .is_some_and(Outcome::requires_attention)
-    }
-}
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
-pub enum ExecutionOwner {
-    Service {
-        service_id: crate::workload_id::WorkloadId,
-    },
-    Schedule {
-        schedule_id: crate::workload_id::WorkloadId,
-        invocation: Invocation,
-    },
-}
-impl ExecutionOwner {
-    pub fn id(&self) -> &crate::workload_id::WorkloadId {
-        match self {
-            Self::Service { service_id } => service_id,
-            Self::Schedule { schedule_id, .. } => schedule_id,
-        }
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

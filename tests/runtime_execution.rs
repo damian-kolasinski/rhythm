@@ -1,9 +1,12 @@
 #![cfg(unix)]
 use rhythm::{
+    execution_records::*,
     local_access::Access,
     local_api,
+    operation_error::Error,
     private_storage::{self, Root},
-    services::*,
+    runtime_protocol::Request as RuntimeRequest,
+    schedules::*,
 };
 use serde_json::json;
 use std::{
@@ -64,11 +67,12 @@ impl Fixture {
             .await
             .expect("fixture request succeeds")
     }
-    fn id(id: &str) -> ServiceId {
+
+    fn id(id: &str) -> ScheduleId {
         id.parse().unwrap()
     }
-    async fn create(&self, id: &str, script: &str, restart: &str, delay: u64) {
-        let definition=serde_json::from_value(json!({"id":id,"command":["/bin/sh","-c",script],"working_directory":self.temp.path(),"restart":restart,"restart_delay_ms":delay})).unwrap();
+    async fn create(&self, id: &str, script: &str) {
+        let definition=serde_json::from_value(json!({"id":id,"command":["/bin/sh","-c",script],"working_directory":self.temp.path(),"trigger":{"type":"interval","every_ms":60000},"overlap":"skip","missed":"skip"})).unwrap();
         self.call(Request::Create { definition }).await;
     }
     async fn history(&self, id: &str) -> Vec<Execution> {
@@ -89,27 +93,15 @@ impl Fixture {
     }
     async fn wait_running(&self, id: &str) -> Execution {
         for _ in 0..300 {
-            if let Response::Service { service, .. } =
+            if let Response::Schedule { schedule, .. } =
                 self.call(Request::Inspect { id: Self::id(id) }).await
-                && matches!(service.observed, Observed::Running { .. })
+                && matches!(schedule.observed, Observed::Running { .. })
             {
-                return service.latest_execution.unwrap();
+                return schedule.latest_execution.unwrap();
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
-        panic!("service did not run")
-    }
-    async fn restart_runtime(&mut self, crash: bool) {
-        if crash {
-            self.runtime.kill().unwrap();
-        } else {
-            local_api::call(&self.root, &rhythm::runtime_protocol::Request::Shutdown)
-                .await
-                .unwrap();
-        }
-        wait_child(&mut self.runtime).await;
-        self.runtime = Self::spawn(&self.root);
-        self.ready().await;
+        panic!("schedule did not run")
     }
     fn cli(&self, args: &[&str]) -> serde_json::Value {
         let o = Command::new(env!("CARGO_BIN_EXE_rhythm"))
@@ -157,24 +149,48 @@ fn process_running(pid: i32) -> bool {
     !out.stdout.is_empty() && !String::from_utf8_lossy(&out.stdout).trim().starts_with('Z')
 }
 
+#[test]
+fn cli_exposes_only_schedules_and_runtime_controls() {
+    let help = Command::new(env!("CARGO_BIN_EXE_rhythm"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let help = String::from_utf8(help.stdout).unwrap();
+    assert!(help.contains("schedule"));
+    assert!(!help.contains("service"));
+    assert!(!help.contains("discover"));
+    for command in ["service", "discover"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rhythm"))
+            .args(["--json", command])
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stderr).unwrap()["error"]["code"],
+            "invalid_request"
+        );
+    }
+}
+
 #[tokio::test]
-async fn finite_service_cli_history_logs_and_environment_isolation() {
+async fn finite_schedule_cli_history_logs_and_environment_isolation() {
     let f = Fixture::new().await;
-    f.create("sample-finite","[ -z \"$RHYTHM_FIXTURE_SECRET\" ] || exit 91; printf sample-output; printf sample-error >&2; exit 7","never",100).await;
-    f.cli(&["service", "start", "sample-finite"]);
+    f.create("sample-finite","[ -z \"$RHYTHM_FIXTURE_SECRET\" ] || exit 91; printf sample-output; printf sample-error >&2; exit 7",).await;
+    f.cli(&["schedule", "run-now", "sample-finite"]);
     let e = f.wait_finished("sample-finite", 1).await;
     assert_eq!(e[0].outcome, Some(Outcome::Exited { code: 7 }));
-    let logs = f.cli(&["service", "logs", &e[0].id.to_string()]);
+    let logs = f.cli(&["schedule", "logs", &e[0].id.to_string()]);
     assert_eq!(logs["stdout"], "sample-output");
     assert_eq!(logs["stderr"], "sample-error");
     assert_eq!(
-        f.cli(&["service", "list"])["services"]
+        f.cli(&["schedule", "list"])["schedules"]
             .as_array()
             .unwrap()
             .len(),
         1
     );
-    let duplicate=serde_json::from_value(json!({"id":"sample-finite","command":["/bin/true"],"working_directory":f.temp.path(),"restart":"never"})).unwrap();
+    let duplicate=serde_json::from_value(json!({"id":"sample-finite","command":["/bin/true"],"working_directory":f.temp.path(),"trigger":{"type":"interval","every_ms":60000},"overlap":"skip","missed":"skip"})).unwrap();
     assert!(matches!(
         local_api::call(
             &f.root,
@@ -188,69 +204,14 @@ async fn finite_service_cli_history_logs_and_environment_isolation() {
 }
 
 #[tokio::test]
-async fn start_is_idempotent_restart_is_explicit_and_stop_kills_descendants() {
-    let f = Fixture::new().await;
-    f.create(
-        "sample-tree",
-        "trap '' TERM; sleep 30 & echo $! > child.pid; wait",
-        "never",
-        100,
-    )
-    .await;
-    f.call(Request::Start {
-        id: Fixture::id("sample-tree"),
-    })
-    .await;
-    let first = f.wait_running("sample-tree").await;
-    let pid = wait_file(f.temp.path().join("child.pid"))
-        .await
-        .trim()
-        .parse()
-        .unwrap();
-    f.call(Request::Start {
-        id: Fixture::id("sample-tree"),
-    })
-    .await;
-    f.call(Request::Stop {
-        id: Fixture::id("sample-tree"),
-    })
-    .await;
-    let e = f.wait_finished("sample-tree", 1).await;
-    assert_eq!(e.len(), 1);
-    assert_eq!(e[0].outcome, Some(Outcome::Stopped));
-    assert!(!process_running(pid));
-    f.call(Request::Start {
-        id: Fixture::id("sample-tree"),
-    })
-    .await;
-    let second = f.wait_running("sample-tree").await;
-    assert!(second.id > first.id);
-    f.call(Request::Restart {
-        id: Fixture::id("sample-tree"),
-    })
-    .await;
-    for _ in 0..300 {
-        let runs = f.history("sample-tree").await;
-        if runs.len() >= 3 {
-            assert!(runs[0].id > second.id);
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("explicit restart did not execute")
-}
-
-#[tokio::test]
-async fn normal_exit_cleans_redirected_descendants_before_restarting() {
+async fn normal_exit_cleans_redirected_descendants() {
     let f = Fixture::new().await;
     f.create(
         "sample-parent",
         "sleep 30 </dev/null >/dev/null 2>&1 & echo $! > child.pid; exit 0",
-        "never",
-        100,
     )
     .await;
-    f.call(Request::Start {
+    f.call(Request::RunNow {
         id: Fixture::id("sample-parent"),
     })
     .await;
@@ -264,91 +225,6 @@ async fn normal_exit_cleans_redirected_descendants_before_restarting() {
         Some(Outcome::Exited { code: 0 })
     );
     assert!(!process_running(pid));
-}
-
-#[tokio::test]
-async fn policies_and_retry_deadlines_survive_runtime_restart() {
-    let mut f = Fixture::new().await;
-    f.create("sample-retry", "exit 3", "on_failure", 1500).await;
-    f.call(Request::Start {
-        id: Fixture::id("sample-retry"),
-    })
-    .await;
-    let first = f.wait_finished("sample-retry", 1).await[0].clone();
-    let deadline = match f
-        .call(Request::Inspect {
-            id: Fixture::id("sample-retry"),
-        })
-        .await
-    {
-        Response::Service { service, .. } => match service.observed {
-            Observed::Waiting { retry_at_ms } => retry_at_ms,
-            _ => panic!("retry deadline missing"),
-        },
-        _ => panic!("service response missing"),
-    };
-    for _ in 0..3 {
-        let response = f
-            .call(Request::Start {
-                id: Fixture::id("sample-retry"),
-            })
-            .await;
-        assert!(
-            matches!(response,Response::Service{service,..} if matches!(service.observed,Observed::Waiting{retry_at_ms} if retry_at_ms==deadline))
-        );
-    }
-    f.restart_runtime(false).await;
-    assert_eq!(f.history("sample-retry").await.len(), 1);
-    let runs = f.wait_finished("sample-retry", 2).await;
-    assert!(runs[0].started_at_ms >= first.finished_at_ms.unwrap() + 1500);
-    f.call(Request::Stop {
-        id: Fixture::id("sample-retry"),
-    })
-    .await;
-    f.create("sample-success", "exit 0", "on_failure", 100)
-        .await;
-    f.call(Request::Start {
-        id: Fixture::id("sample-success"),
-    })
-    .await;
-    f.wait_finished("sample-success", 1).await;
-    f.restart_runtime(false).await;
-    tokio::time::sleep(Duration::from_millis(700)).await;
-    assert_eq!(f.history("sample-success").await.len(), 1);
-}
-
-#[tokio::test]
-async fn crash_stops_old_workload_then_recovers_desired_service_and_history() {
-    let mut f = Fixture::new().await;
-    f.create(
-        "sample-persistent",
-        "echo $$ > leader.pid; exec sleep 30",
-        "never",
-        100,
-    )
-    .await;
-    f.call(Request::Start {
-        id: Fixture::id("sample-persistent"),
-    })
-    .await;
-    let first = f.wait_running("sample-persistent").await;
-    let pid = wait_file(f.temp.path().join("leader.pid"))
-        .await
-        .trim()
-        .parse()
-        .unwrap();
-    f.restart_runtime(true).await;
-    for _ in 0..300 {
-        let e = f.history("sample-persistent").await;
-        if e.len() >= 2 && e[0].supervisor_pid.is_some() {
-            assert_eq!(e[1].id, first.id);
-            assert_eq!(e[1].outcome, Some(Outcome::Interrupted));
-            assert!(!process_running(pid));
-            return;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    panic!("crash recovery did not restore service")
 }
 
 #[tokio::test]
@@ -370,7 +246,7 @@ async fn singleton_and_api_authentication_reject_untrusted_requests() {
         ),
         (Some(access.credential()), None, Some("example.invalid")),
     ] {
-        let mut req = client.post(&url).json(&json!({"operation":"list"}));
+        let mut req = client.post(&url).json(&json!({"operation":"status"}));
         if let Some(v) = auth {
             req = req.bearer_auth(v)
         }
@@ -410,7 +286,7 @@ async fn shutdown_with_concurrent_requests_finishes() {
     for _ in 0..50 {
         let root = f.root.clone();
         requests.push(tokio::spawn(async move {
-            local_api::call(&root, &Request::List).await
+            local_api::call(&root, &RuntimeRequest::Status).await
         }));
     }
     local_api::call(&f.root, &rhythm::runtime_protocol::Request::Shutdown)
@@ -427,14 +303,9 @@ async fn shutdown_with_concurrent_requests_finishes() {
 #[tokio::test]
 async fn output_is_bounded_and_excess_is_drained() {
     let f = Fixture::new().await;
-    f.create(
-        "sample-noisy",
-        "head -c 3145728 /dev/zero; printf done >&2",
-        "never",
-        100,
-    )
-    .await;
-    f.call(Request::Start {
+    f.create("sample-noisy", "head -c 3145728 /dev/zero; printf done >&2")
+        .await;
+    f.call(Request::RunNow {
         id: Fixture::id("sample-noisy"),
     })
     .await;
@@ -491,8 +362,8 @@ fn storage_rejects_permissive_directories_and_symlinks() {
 #[test]
 fn cli_argument_errors_do_not_echo_untrusted_values() {
     for args in [
-        vec!["--json", "service", "start", "../private-source-value"],
-        vec!["--json", "service", "logs", "private-source-value"],
+        vec!["--json", "schedule", "run-now", "../private-source-value"],
+        vec!["--json", "schedule", "logs", "private-source-value"],
         vec!["--json", "private-source-value"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rhythm"))
@@ -550,9 +421,8 @@ fn storage_rejects_extended_acl_grants_and_inheritance_before_writing_secrets() 
 #[tokio::test]
 async fn runtime_stop_shuts_down_foreground_owner_and_is_idempotent() {
     let mut f = Fixture::new().await;
-    f.create("sample-stop", "exec sleep 30", "always", 100)
-        .await;
-    f.call(Request::Start {
+    f.create("sample-stop", "exec sleep 30").await;
+    f.call(Request::RunNow {
         id: Fixture::id("sample-stop"),
     })
     .await;
@@ -563,111 +433,10 @@ async fn runtime_stop_shuts_down_foreground_owner_and_is_idempotent() {
     f.cli(&["runtime", "stop"]);
 }
 
-#[tokio::test]
-async fn pending_restart_cannot_replace_a_lost_monitor_and_acknowledgement_is_explicit() {
-    let mut f = Fixture::new().await;
-    f.create(
-        "sample-uncertain",
-        "echo $$ > leader.pid; exec sleep 30",
-        "always",
-        100,
-    )
-    .await;
-    f.call(Request::Start {
-        id: Fixture::id("sample-uncertain"),
-    })
-    .await;
-    let execution = f.wait_running("sample-uncertain").await;
-    let pid: i32 = wait_file(f.temp.path().join("leader.pid"))
-        .await
-        .trim()
-        .parse()
-        .unwrap();
-    let output = Command::new("/bin/ps")
-        .args(["-o", "pgid=", "-p", &pid.to_string()])
-        .output()
-        .unwrap();
-    let group: i32 = String::from_utf8(output.stdout)
-        .unwrap()
-        .trim()
-        .parse()
-        .unwrap();
-    struct Group(i32);
-    impl Drop for Group {
-        fn drop(&mut self) {
-            unsafe {
-                libc::kill(-self.0, libc::SIGKILL);
-            }
-        }
-    }
-    let cleanup = Group(group);
-    let monitor = execution.supervisor_pid.unwrap() as i32;
-    assert_eq!(unsafe { libc::kill(monitor, libc::SIGSTOP) }, 0);
-    f.call(Request::Restart {
-        id: Fixture::id("sample-uncertain"),
-    })
-    .await;
-    assert_eq!(unsafe { libc::kill(monitor, libc::SIGKILL) }, 0);
-    assert_eq!(
-        f.wait_finished("sample-uncertain", 1).await[0].outcome,
-        Some(Outcome::MonitorLost)
-    );
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    assert_eq!(f.history("sample-uncertain").await.len(), 1);
-    f.restart_runtime(true).await;
-    tokio::time::sleep(Duration::from_millis(250)).await;
-    assert_eq!(f.history("sample-uncertain").await.len(), 1);
-    assert!(matches!(
-        local_api::call(
-            &f.root,
-            &Request::Start {
-                id: Fixture::id("sample-uncertain")
-            }
-        )
-        .await,
-        Err(Error::RecoveryRequired)
-    ));
-    assert!(matches!(
-        local_api::call(
-            &f.root,
-            &Request::Acknowledge {
-                id: Fixture::id("sample-uncertain"),
-                execution_id: execution.id + 1
-            }
-        )
-        .await,
-        Err(Error::RecoveryRequired)
-    ));
-    drop(cleanup);
-    for _ in 0..100 {
-        if !process_running(pid) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert!(!process_running(pid));
-    f.cli(&[
-        "service",
-        "acknowledge",
-        "sample-uncertain",
-        "--execution",
-        &execution.id.to_string(),
-        "--confirm-cleaned",
-    ]);
-    let history = f.history("sample-uncertain").await;
-    assert!(history[0].recovery_acknowledged_at_ms.is_some());
-    assert_eq!(history[0].outcome, Some(Outcome::MonitorLost));
-    f.call(Request::Start {
-        id: Fixture::id("sample-uncertain"),
-    })
-    .await;
-    assert!(f.wait_running("sample-uncertain").await.id > execution.id);
-}
-
 #[cfg(target_os = "macos")]
 #[tokio::test]
 #[ignore = "requires a macOS user launchd domain; creates and removes one disposable registration"]
-async fn launchd_install_cli_service_and_stop_are_verified_end_to_end() {
+async fn launchd_install_cli_schedule_and_stop_are_verified_end_to_end() {
     let mut f = Fixture::new().await;
     struct Cleanup(Root);
     impl Drop for Cleanup {
@@ -694,18 +463,13 @@ async fn launchd_install_cli_service_and_stop_are_verified_end_to_end() {
     f.cli(&["runtime", "install"]);
     f.ready().await;
     f.cli(&["runtime", "install"]);
-    f.create(
-        "sample-launched",
-        "printf launched-output; exit 0",
-        "never",
-        100,
-    )
-    .await;
-    f.cli(&["service", "start", "sample-launched"]);
+    f.create("sample-launched", "printf launched-output; exit 0")
+        .await;
+    f.cli(&["schedule", "run-now", "sample-launched"]);
     let records = f.wait_finished("sample-launched", 1).await;
     assert_eq!(records[0].outcome, Some(Outcome::Exited { code: 0 }));
     assert_eq!(
-        f.cli(&["service", "logs", &records[0].id.to_string()])["stdout"],
+        f.cli(&["schedule", "logs", &records[0].id.to_string()])["stdout"],
         "launched-output"
     );
     f.cli(&["runtime", "stop"]);

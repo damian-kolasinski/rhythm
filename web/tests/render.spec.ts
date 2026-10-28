@@ -1,24 +1,15 @@
 import { test, expect, type Route } from "@playwright/test";
 import { Runtime } from "./runtime";
-import { cadence, parseArguments, when } from "../src/workloads/presentation";
+import { cadence, when } from "../src/schedules/presentation";
 const now = Date.parse("2026-01-15T09:00:00Z");
-const run = (id: number, outcome: any) => ({
+const run = (id: number, owner: string, outcome: any) => ({
   id,
+  schedule_id: owner,
+  invocation: { source: "manual", requested_at_ms: now - 60000 },
   started_at_ms: now - 60000,
   finished_at_ms: outcome ? now - 30000 : null,
   outcome,
   recovery_acknowledged_at_ms: null,
-});
-const service = (id: string, state: string, outcome: any, execution = 1) => ({
-  id,
-  desired: state === "stopped" ? "stopped" : "running",
-  observed: {
-    state,
-    ...(state === "running" || state === "recovering"
-      ? { execution_id: execution }
-      : {}),
-  },
-  latest_execution: state === "stopped" ? null : run(execution, outcome),
 });
 const schedule = (
   id: string,
@@ -30,22 +21,20 @@ const schedule = (
   id,
   enabled,
   observed: { state },
-  latest_execution: outcome ? run(execution, outcome) : null,
-  next_run_at_ms: enabled ? now + 5400000 : null,
+  latest_execution:
+    outcome || ["running", "recovering"].includes(state)
+      ? run(execution, id, outcome)
+      : null,
+  next_run_at_ms: enabled && state !== "needs_attention" ? now + 5400000 : null,
   pending: null,
   last_decision: null,
 });
-const standard = {
-  services: [
-    service("sample-indexer", "running", null),
-    service("sample-export", "exited", { type: "exited", code: 4 }, 2),
-    service("sample-notifier", "stopped", null),
-  ],
-  schedules: [
-    schedule("sample-report", true),
-    schedule("sample-backup", false),
-  ],
-};
+const standard = [
+  schedule("sample-report", true, "running"),
+  schedule("sample-export", false, "idle", { type: "exited", code: 4 }, 2),
+  schedule("sample-backup", false),
+  schedule("sample-cleanup", true),
+];
 let runtime: Runtime;
 test.beforeEach(async () => {
   runtime = await Runtime.start();
@@ -54,12 +43,7 @@ test.afterEach(async () => {
   await runtime.stop();
 });
 
-async function mock(
-  route: Route,
-  services: any[],
-  schedules: any[],
-  error = false,
-) {
+async function mock(route: Route, schedules: any[], error = false) {
   const body = route.request().postDataJSON();
   if (error)
     return route.fulfill({
@@ -67,24 +51,22 @@ async function mock(
       json: { error: { code: "runtime_unavailable" } },
     });
   if (body.operation === "status")
-    return route.fulfill({ json: { type: "runtime", version: "0.1.0" } });
+    return route.fulfill({ json: { type: "runtime", version: "0.1.1" } });
   if (body.operation === "list")
-    return route.fulfill({ json: { type: "services", services } });
-  if (body.operation === "schedule" && body.command.operation === "list")
-    return route.fulfill({
-      json: { type: "schedule", response: { type: "schedules", schedules } },
-    });
+    return route.fulfill({ json: { type: "schedules", schedules } });
   if (body.operation === "inspect")
     return route.fulfill({
       json: {
-        type: "service",
-        service: services.find((s) => s.id === body.id),
+        type: "schedule",
+        schedule: schedules.find((s) => s.id === body.id),
         definition: {
           id: body.id,
           command: ["/bin/sh", "-c", "printf sample-output"],
           working_directory: "/tmp",
-          restart: "never",
-          restart_delay_ms: 1000,
+          trigger: { type: "interval", every_ms: 60000 },
+          overlap: "skip",
+          missed: "run_once",
+          grace_ms: 1000,
         },
       },
     });
@@ -93,7 +75,7 @@ async function mock(
       json: {
         type: "history",
         executions: [
-          services.find((s) => s.id === body.id)?.latest_execution,
+          schedules.find((s) => s.id === body.id)?.latest_execution,
         ].filter(Boolean),
       },
     });
@@ -123,39 +105,32 @@ for (const state of [
     await page.addInitScript((value) => {
       Date.now = () => value;
     }, now);
-    const services =
-      state === "empty"
-        ? []
-        : state === "attention"
-          ? [
-              service("sample-uncertain", "needs_attention", {
-                type: "monitor_lost",
-              }),
-            ]
-          : state === "recovering"
-            ? [service("sample-recovering", "recovering", null)]
-            : state === "unsupported-response"
-              ? [service("sample-unknown", "unknown", null)]
-              : standard.services;
     const schedules =
       state === "empty"
         ? []
         : state === "attention"
           ? [
+              schedule("sample-uncertain", true, "needs_attention", {
+                type: "monitor_lost",
+              }),
               schedule("sample-output", true, "needs_attention", {
                 type: "output_unavailable",
               }),
             ]
-          : standard.schedules;
+          : state === "recovering"
+            ? [schedule("sample-recovering", true, "recovering")]
+            : state === "unsupported-response"
+              ? [schedule("sample-unknown", true, "unknown")]
+              : standard;
     await page.route("**/v1/browser/command", (r) =>
-      mock(r, services, schedules, state === "error"),
+      mock(r, schedules, state === "error"),
     );
     await page.goto(runtime.origin);
     if (state === "error" || state === "unsupported-response")
       await expect(page.getByRole("alert")).toBeVisible();
     else
       await expect(
-        page.getByRole("heading", { name: "Services", exact: false }).last(),
+        page.getByRole("region", { name: "Schedule list", exact: true }),
       ).toBeVisible();
     await expect(page).toHaveScreenshot(`${state}.png`, { fullPage: true });
   });
@@ -168,27 +143,66 @@ test("render loading", async ({ page, context }) => {
     requests.push(route);
   });
   await page.goto(runtime.origin);
-  await expect(page.getByText("Loading your workspace…")).toBeVisible();
+  await expect(page.getByText("Loading schedules…")).toBeVisible();
   await page.keyboard.press("Control+k");
   await page.keyboard.press("Meta+k");
   expect(errors).toEqual([]);
   await expect(page).toHaveScreenshot("loading.png", { fullPage: true });
   for (const request of requests) await request.abort();
 });
-test("render mobile overview", async ({ page }) => {
+test("render mobile list", async ({ page }) => {
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
-  await page.route("**/v1/browser/command", (r) =>
-    mock(r, standard.services, standard.schedules),
-  );
+  await page.route("**/v1/browser/command", (r) => mock(r, standard));
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(runtime.origin);
   await expect(
-    page.getByRole("link", { name: "Inspect sample-indexer" }),
+    page.getByRole("link", { name: "Inspect sample-report" }),
   ).toBeVisible();
   await expect(page).toHaveScreenshot("mobile.png", { fullPage: true });
 });
+test("render no matching work", async ({ page }) => {
+  await page.route("**/v1/browser/command", (r) => mock(r, standard));
+  await page.goto(runtime.origin);
+  await page
+    .getByRole("searchbox", { name: "Search schedules" })
+    .fill("missing");
+  await expect(
+    page.getByText("No schedules match these filters."),
+  ).toBeVisible();
+  await expect(page).toHaveScreenshot("no-matches.png", { fullPage: true });
+});
+
+test("render narrow list with long names and upcoming timing", async ({
+  page,
+}) => {
+  await page.addInitScript((value) => {
+    Date.now = () => value;
+  }, now);
+  const longName = "sample-" + "a".repeat(56);
+  await page.route("**/v1/browser/command", (r) =>
+    mock(r, [...standard, schedule(longName, false)]),
+  );
+  await page.setViewportSize({ width: 712, height: 900 });
+  await page.goto(runtime.origin);
+  await expect(
+    page.getByRole("link", { name: `Inspect ${longName}` }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "Next run", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("table", { name: "Schedules", exact: true }),
+  ).toContainText("in 1h 30m");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await expect(page).toHaveScreenshot("narrow.png", { fullPage: true });
+});
+
 test("render uncertain cleanup and literal execution output", async ({
   page,
   context,
@@ -196,11 +210,17 @@ test("render uncertain cleanup and literal execution output", async ({
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
-  const services = [
-    service("sample-uncertain", "needs_attention", { type: "monitor_lost" }),
+  const schedules = [
+    schedule(
+      "sample-uncertain",
+      true,
+      "needs_attention",
+      { type: "monitor_lost" },
+      1,
+    ),
   ];
-  await page.route("**/v1/browser/command", (r) => mock(r, services, []));
-  await page.goto(`${runtime.origin}/#/services/sample-uncertain`);
+  await page.route("**/v1/browser/command", (r) => mock(r, schedules));
+  await page.goto(`${runtime.origin}/#/sample-uncertain`);
   const dialog = page.getByRole("dialog", {
     name: "sample-uncertain",
     exact: true,
@@ -223,13 +243,7 @@ test("render uncertain cleanup and literal execution output", async ({
   );
   await expect(page).toHaveScreenshot("logs.png");
 });
-test("argument and recurrence presentation boundaries", () => {
-  expect(parseArguments("")).toEqual([]);
-  expect(parseArguments("one\r\n\r\n two ")).toEqual(["one", "", " two "]);
-  expect(parseArguments('$(literal)\n"quoted"')).toEqual([
-    "$(literal)",
-    '"quoted"',
-  ]);
+test("recurrence presentation boundaries", () => {
   expect(
     cadence({
       type: "weekly",
@@ -244,37 +258,17 @@ test("argument and recurrence presentation boundaries", () => {
   expect(when(now, now)).toBe("Due now");
 });
 
-test("render service and schedule creation forms and mobile detail", async ({
-  page,
-  context,
-}) => {
+test("render mobile detail", async ({ page, context }) => {
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
-  await page.route("**/v1/browser/command", (r) =>
-    mock(r, standard.services, standard.schedules),
-  );
+  await page.route("**/v1/browser/command", (r) => mock(r, standard));
   await page.goto(runtime.origin);
   await expect(
-    page.getByRole("link", { name: "Inspect sample-indexer" }),
+    page.getByRole("link", { name: "Inspect sample-report" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "New service", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "New service" })).toBeVisible();
-  await expect(page).toHaveScreenshot("create-service.png");
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New schedule" });
-  await expect(form).toBeVisible();
-  await expect(page).toHaveScreenshot("create-interval.png");
-  await form.getByLabel("Trigger", { exact: true }).selectOption("weekly");
-  await expect(page).toHaveScreenshot("create-weekly.png");
-  await form.getByLabel("Trigger", { exact: true }).selectOption("daily");
-  await expect(page).toHaveScreenshot("create-daily.png");
-  await page.keyboard.press("Escape");
-  await expect(form).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("link", { name: "Inspect sample-indexer" }).click();
+  await page.getByRole("link", { name: "Inspect sample-report" }).click();
   await expect(page.getByRole("dialog").locator(".status")).toHaveText(
     "Running",
   );
@@ -287,12 +281,10 @@ for (const theme of ["light", "dark"] as const) {
     await page.addInitScript((value) => {
       Date.now = () => value;
     }, now);
-    await page.route("**/v1/browser/command", (r) =>
-      mock(r, standard.services, standard.schedules),
-    );
+    await page.route("**/v1/browser/command", (r) => mock(r, standard));
     await page.goto(runtime.origin);
     await expect(
-      page.getByRole("link", { name: "Inspect sample-indexer" }),
+      page.getByRole("link", { name: "Inspect sample-report" }),
     ).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     expect(
@@ -301,15 +293,14 @@ for (const theme of ["light", "dark"] as const) {
     const actual = await page.evaluate(() => ({
       face: getComputedStyle(document.body).fontFamily,
       page: getComputedStyle(document.documentElement).backgroundColor,
-      action: getComputedStyle(document.querySelector(".new-actions .primary")!)
-        .backgroundColor,
+      brand: getComputedStyle(document.querySelector(".brand svg")!).color,
     }));
     expect(actual.face).toContain("DM Sans");
     expect(actual.page).toBe(
       theme === "light" ? "rgb(247, 252, 255)" : "rgb(34, 37, 38)",
     );
-    expect(actual.action).toBe(
-      theme === "light" ? "rgb(0, 59, 102)" : "rgb(102, 191, 255)",
+    expect(actual.brand).toBe(
+      theme === "light" ? "rgb(0, 59, 102)" : "rgb(229, 244, 255)",
     );
     await expect(page).toHaveScreenshot(`appearance-${theme}.png`, {
       fullPage: true,

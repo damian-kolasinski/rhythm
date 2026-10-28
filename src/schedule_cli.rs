@@ -76,5 +76,7 @@ pub async fn run(command: ScheduleCommand, root: Root) -> Result<RuntimeResponse
             }
         }
     };
-    local_api::call(&root, &RuntimeRequest::Schedule { command }).await
+    local_api::call(&root, &command)
+        .await
+        .map(RuntimeResponse::Schedule)
 }

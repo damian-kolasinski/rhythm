@@ -1,5 +1,9 @@
 //! User launchd adapter, limited to registrations created for a private Rhythm directory.
-use crate::{private_storage, services::*};
+use crate::{
+    operation_error::{Error, Result},
+    private_storage,
+    runtime_supervision::RuntimeSupervisor,
+};
 use sha2::{Digest, Sha256};
 use std::{
     fs::{self, OpenOptions},
