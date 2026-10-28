@@ -40,6 +40,8 @@ Node, pnpm, a source checkout, and the packslip CLI are not runtime dependencies
 The repository pins Node, pnpm, Python, Rust, packslip, actionlint, and Ruff.
 `mise.lock` records available downloads/checksums for the development CI platforms;
 Rust uses rustup's exact toolchain version from the matching toolchain file.
+The mise Rust entry explicitly installs `rustfmt` and Clippy, including on fresh
+runners whose rustup profile is minimal.
 
 ```sh
 mise trust mise.toml

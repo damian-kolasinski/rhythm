@@ -4,7 +4,7 @@ min_version = "2026.10.11"
 node = "22.19.0"
 pnpm = "10.12.4"
 python = "3.14.3"
-rust = "1.99.0"
+rust = { version = "1.99.0", profile = "minimal", components = ["rustfmt", "clippy"] }
 "github:jdx/packslip" = "1.11.1"
 "github:rhysd/actionlint" = "1.7.12"
 ruff = "0.17.3"
