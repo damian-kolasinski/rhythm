@@ -149,11 +149,12 @@ and GitHub OIDC issuer, and pins both in the isolated mise configuration.
 It has no test-key or unlogged bypass. Its receipt contains generic pass/fail
 fields, version, and archive digest; it does not publish private paths or state.
 
-For a GUI session, add `--launchd` to verify a disposable registration pointing
-at the installed executable, execute synthetic work, restart supervision, and
-confirm retained history. The registration is removed afterward. Browser tests
-set `RHYTHM_BIN` to the installed executable, so the harness cannot silently use
-a debug checkout. Every runtime and workload in these tests uses temporary state.
+On macOS with an available user launchd domain, add `--launchd` to verify a
+disposable registration pointing at the installed executable, execute synthetic
+work, restart supervision, and confirm retained history. The registration is
+removed afterward. Browser tests set `RHYTHM_BIN` to the installed executable,
+so the harness cannot silently use a debug checkout. Every runtime and workload
+in these tests uses temporary state.
 The current local-opening trust model remains described in [web-ui.md](web-ui.md).
 
 The local candidate rehearsal uses disposable test keys and never publishes them.

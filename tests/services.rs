@@ -666,7 +666,7 @@ async fn pending_restart_cannot_replace_a_lost_monitor_and_acknowledgement_is_ex
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-#[ignore = "requires a macOS GUI launchd domain; creates and removes one disposable registration"]
+#[ignore = "requires a macOS user launchd domain; creates and removes one disposable registration"]
 async fn launchd_install_cli_service_and_stop_are_verified_end_to_end() {
     let mut f = Fixture::new().await;
     struct Cleanup(Root);

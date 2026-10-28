@@ -87,8 +87,14 @@ with `--json` also making failures structured. `service list` finds owned work
 across sessions. `service restart` explicitly replaces a current execution;
 repeated `start` preserves an existing execution or retry deadline.
 
-On macOS, `runtime install` registers the current executable under the logged-in
-user's GUI launchd domain; `runtime status` checks the authenticated API.
+On macOS, `runtime install` registers the current executable as a Background
+LaunchAgent in the current user's non-graphical launchd domain. It works over
+SSH without a graphical login and remains supervised after disconnection.
+An already loaded GUI registration stays in its original domain during an
+update; stop and uninstall find owned registrations in either domain.
+This is user-scoped supervision, not a system daemon: it requires an available
+user domain and does not promise startup before that domain exists.
+`runtime status` checks the authenticated API.
 Use an executable at a stable location. `runtime stop` removes supervision and
 waits for the runtime to release its lock. `runtime uninstall` removes the
 registration while preserving state and logs. Versioned distribution uses mise and packslip; see [docs/distribution.md](docs/distribution.md). See [docs/services.md](docs/services.md) for execution,
@@ -130,7 +136,7 @@ pnpm --dir web build
 cargo build --locked
 pnpm --dir web exec playwright install chromium
 pnpm --dir web test
-# macOS GUI session: installs and removes one disposable registration
+# macOS user launchd domain: installs and removes one disposable registration
 cargo test --locked --test services launchd_install_cli_service_and_stop_are_verified_end_to_end -- --ignored
 ```
 
