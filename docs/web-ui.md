@@ -23,10 +23,15 @@ registrations cannot be controlled from this workspace.
 
 ## Controls and execution details
 
-- Search by workload name or filter by running, attention, or stopped/paused.
-- Create stopped services and paused interval, daily, or weekly schedules.
-  Executables and working directories must be absolute. Arguments are one
-  literal argument per line; an explicit shell command is needed for shell syntax.
+- One list combines services and schedules, with failures and uncertain outcomes
+  first. Search by workload name and combine kind and state filters. Upcoming
+  runs appear in the list; narrow screens keep timing alongside status. Existing
+  service and schedule detail links remain supported.
+- Create stopped services and paused interval, daily, or weekly schedules through
+  the CLI using `service create --file FILE` or `schedule create --file FILE`.
+  Command, trigger, overlap, missed-run, and restart configuration stays in CLI
+  definitions and the read-only Definition tab. The browser has no creation form;
+  the trusted local browser API retains its existing command authority.
 - Start services; confirm stop or restart. Run schedules immediately, resume
   automatic triggers, or confirm pause/cancel. Pausing preserves active and
   accepted manual work; cancellation clears active and queued work without
@@ -130,8 +135,9 @@ Rendering goldens cover light/dark palettes, bundled fonts, empty/loading/error,
 recovering and uncertain states, unsupported responses, mobile, confirmation,
 and literal output. Their fixtures replace only the external HTTP boundary.
 Flow tests use the real loopback server, SQLite, and process execution, including
-direct CLI-URL entry, reload/new-tab access, cross-site refusal, service creation and controls,
-interval/daily/weekly creation, schedule controls, cleanup acknowledgment,
+direct CLI-URL entry, reload/new-tab access, cross-site refusal, CLI-created
+services and interval/daily/weekly schedules, combined filters, service/schedule
+controls, cleanup acknowledgment,
 search, focus preservation, and connection loss/retry. Rust tests additionally
 check Host/Origin/client-header enforcement, bounded requests, generic
 errors, embedded assets, and demo failure cleanup.

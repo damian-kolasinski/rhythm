@@ -137,11 +137,3 @@ export const statusSchema = z.object({
   version: z.string(),
 });
 export const workspaceInfoSchema = z.object({ demo: z.boolean() });
-export const createdSchema = z.object({
-  type: z.literal("created"),
-  id: z.string(),
-});
-export const scheduleCreatedSchema = z.object({
-  type: z.literal("schedule"),
-  response: createdSchema,
-});

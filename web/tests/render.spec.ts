@@ -1,6 +1,6 @@
 import { test, expect, type Route } from "@playwright/test";
 import { Runtime } from "./runtime";
-import { cadence, parseArguments, when } from "../src/workloads/presentation";
+import { cadence, when } from "../src/workloads/presentation";
 const now = Date.parse("2026-01-15T09:00:00Z");
 const run = (id: number, outcome: any) => ({
   id,
@@ -155,7 +155,7 @@ for (const state of [
       await expect(page.getByRole("alert")).toBeVisible();
     else
       await expect(
-        page.getByRole("heading", { name: "Services", exact: false }).last(),
+        page.getByRole("region", { name: "Work list", exact: true }),
       ).toBeVisible();
     await expect(page).toHaveScreenshot(`${state}.png`, { fullPage: true });
   });
@@ -168,14 +168,14 @@ test("render loading", async ({ page, context }) => {
     requests.push(route);
   });
   await page.goto(runtime.origin);
-  await expect(page.getByText("Loading your workspace…")).toBeVisible();
+  await expect(page.getByText("Loading work…")).toBeVisible();
   await page.keyboard.press("Control+k");
   await page.keyboard.press("Meta+k");
   expect(errors).toEqual([]);
   await expect(page).toHaveScreenshot("loading.png", { fullPage: true });
   for (const request of requests) await request.abort();
 });
-test("render mobile overview", async ({ page }) => {
+test("render mobile list", async ({ page }) => {
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
@@ -189,6 +189,49 @@ test("render mobile overview", async ({ page }) => {
   ).toBeVisible();
   await expect(page).toHaveScreenshot("mobile.png", { fullPage: true });
 });
+test("render no matching work", async ({ page }) => {
+  await page.route("**/v1/browser/command", (r) =>
+    mock(r, standard.services, standard.schedules),
+  );
+  await page.goto(runtime.origin);
+  await page.getByRole("searchbox", { name: "Search work" }).fill("missing");
+  await expect(page.getByText("No work matches these filters.")).toBeVisible();
+  await expect(page).toHaveScreenshot("no-matches.png", { fullPage: true });
+});
+
+test("render narrow list with long names and upcoming timing", async ({
+  page,
+}) => {
+  await page.addInitScript((value) => {
+    Date.now = () => value;
+  }, now);
+  const longName = "sample-" + "a".repeat(56);
+  await page.route("**/v1/browser/command", (r) =>
+    mock(
+      r,
+      [...standard.services, service(longName, "stopped", null)],
+      standard.schedules,
+    ),
+  );
+  await page.setViewportSize({ width: 712, height: 900 });
+  await page.goto(runtime.origin);
+  await expect(
+    page.getByRole("link", { name: `Inspect ${longName}` }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("columnheader", { name: "Next run", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("table", { name: "Work", exact: true }),
+  ).toContainText("in 1h 30m");
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  await expect(page).toHaveScreenshot("narrow.png", { fullPage: true });
+});
+
 test("render uncertain cleanup and literal execution output", async ({
   page,
   context,
@@ -223,13 +266,7 @@ test("render uncertain cleanup and literal execution output", async ({
   );
   await expect(page).toHaveScreenshot("logs.png");
 });
-test("argument and recurrence presentation boundaries", () => {
-  expect(parseArguments("")).toEqual([]);
-  expect(parseArguments("one\r\n\r\n two ")).toEqual(["one", "", " two "]);
-  expect(parseArguments('$(literal)\n"quoted"')).toEqual([
-    "$(literal)",
-    '"quoted"',
-  ]);
+test("recurrence presentation boundaries", () => {
   expect(
     cadence({
       type: "weekly",
@@ -244,10 +281,7 @@ test("argument and recurrence presentation boundaries", () => {
   expect(when(now, now)).toBe("Due now");
 });
 
-test("render service and schedule creation forms and mobile detail", async ({
-  page,
-  context,
-}) => {
+test("render mobile detail", async ({ page, context }) => {
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
@@ -258,21 +292,6 @@ test("render service and schedule creation forms and mobile detail", async ({
   await expect(
     page.getByRole("link", { name: "Inspect sample-indexer" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "New service", exact: true }).click();
-  await expect(page.getByRole("dialog", { name: "New service" })).toBeVisible();
-  await expect(page).toHaveScreenshot("create-service.png");
-  await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New schedule" });
-  await expect(form).toBeVisible();
-  await expect(page).toHaveScreenshot("create-interval.png");
-  await form.getByLabel("Trigger", { exact: true }).selectOption("weekly");
-  await expect(page).toHaveScreenshot("create-weekly.png");
-  await form.getByLabel("Trigger", { exact: true }).selectOption("daily");
-  await expect(page).toHaveScreenshot("create-daily.png");
-  await page.keyboard.press("Escape");
-  await expect(form).toHaveCount(0);
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("link", { name: "Inspect sample-indexer" }).click();
   await expect(page.getByRole("dialog").locator(".status")).toHaveText(
@@ -301,15 +320,14 @@ for (const theme of ["light", "dark"] as const) {
     const actual = await page.evaluate(() => ({
       face: getComputedStyle(document.body).fontFamily,
       page: getComputedStyle(document.documentElement).backgroundColor,
-      action: getComputedStyle(document.querySelector(".new-actions .primary")!)
-        .backgroundColor,
+      brand: getComputedStyle(document.querySelector(".brand svg")!).color,
     }));
     expect(actual.face).toContain("DM Sans");
     expect(actual.page).toBe(
       theme === "light" ? "rgb(247, 252, 255)" : "rgb(34, 37, 38)",
     );
-    expect(actual.action).toBe(
-      theme === "light" ? "rgb(0, 59, 102)" : "rgb(102, 191, 255)",
+    expect(actual.brand).toBe(
+      theme === "light" ? "rgb(0, 59, 102)" : "rgb(229, 244, 255)",
     );
     await expect(page).toHaveScreenshot(`appearance-${theme}.png`, {
       fullPage: true,

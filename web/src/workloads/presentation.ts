@@ -108,9 +108,6 @@ export function cadence(trigger: Trigger): string {
   const days = ["", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
   return `${trigger.type === "daily" ? "Daily" : trigger.weekdays.map((d) => days[d]).join(", ")} at ${time} · ${trigger.timezone}`;
 }
-export function parseArguments(text: string): string[] {
-  return text === "" ? [] : text.split(/\r?\n/);
-}
 export function items(services: Service[], schedules: Schedule[]): Item[] {
   return [
     ...services.map((value) => ({ kind: "service" as const, value })),

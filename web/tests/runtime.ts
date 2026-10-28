@@ -1,6 +1,6 @@
 import { spawn, execFile, type ChildProcess } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,6 +56,22 @@ export class Runtime {
     if (!response.ok) throw new Error("Fixture request failed");
     return response.json();
   }
+  async create<Definition extends { id: string }>(
+    kind: "service" | "schedule",
+    definition: Definition,
+  ) {
+    const file = join(this.dir, `${kind}-definition.json`);
+    await writeFile(file, JSON.stringify(definition), { mode: 0o600 });
+    await execute(binary, [
+      "--json",
+      "--data-dir",
+      join(this.dir, "state"),
+      kind,
+      "create",
+      "--file",
+      file,
+    ]);
+  }
   async launch(): Promise<{ url: string; demo: boolean }> {
     const out = await execute(binary, [
       "--json",
@@ -69,9 +85,7 @@ export class Runtime {
   async connect(page: Page) {
     const launch = await this.launch();
     await page.goto(launch.url);
-    await page
-      .getByRole("heading", { name: "Background work, in view." })
-      .waitFor();
+    await page.getByRole("heading", { name: "Work", exact: true }).waitFor();
   }
   async stop() {
     if (this.child.exitCode === null && this.child.signalCode === null) {

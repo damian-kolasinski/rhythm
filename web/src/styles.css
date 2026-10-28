@@ -221,8 +221,7 @@ button {
   white-space: nowrap;
   line-height: 1.3;
 }
-.status i,
-.local-badge i {
+.status i {
   width: 5px;
   height: 5px;
   border-radius: 50%;
@@ -288,7 +287,6 @@ button {
 }
 
 h1,
-.page-heading h1,
 .dialog h2 {
   font: var(--type-h3);
   letter-spacing: var(--tracking-heading);
@@ -323,10 +321,6 @@ h3 {
   letter-spacing: var(--tracking-label);
   border-radius: 999px;
 }
-.metric > strong {
-  font: var(--type-h3);
-  letter-spacing: var(--tracking-heading);
-}
 ::selection {
   background: var(--background-selected);
 }
@@ -341,8 +335,6 @@ textarea:focus {
   color: var(--text-on-fill);
 }
 
-.section-heading h2,
-.panel-title h2,
 .activity-heading h3,
 .logs-panel h3,
 .definition-panel h3 {

@@ -85,7 +85,7 @@ SQLite state, contained foreground execution, explicit recovery acknowledgment,
 private bounded logs, and owned launchd installation. See [services.md](services.md)
 for the verified service contract. Persisted schedules add interval/daily/weekly
 triggers, overlap/missed-run policies, durable dispatch, finite execution records,
-and explicit cleanup acknowledgment; see [schedules.md](schedules.md). The embedded web UI now provides the owned-work overview, creation, controls,
+and explicit cleanup acknowledgment; see [schedules.md](schedules.md). The embedded web UI now provides one filterable owned-work list, controls,
 history/logs, explicit cleanup acknowledgment, and a disposable real-runtime
 demo; see [web-ui.md](web-ui.md). Global retention, migration staging with
 rollback and live workload cutover remain subsequent work. Distribution now has

@@ -57,7 +57,10 @@ test("disposable demo uses real services, schedules, controls and logs", async (
     ).toBeVisible();
     await page.getByRole("button", { name: "Refresh workspace" }).click();
     await expect(
-      page.locator(".attention-row").filter({ hasText: "sample-export" }),
+      page
+        .getByRole("row")
+        .filter({ hasText: "sample-export" })
+        .getByText("Failed", { exact: true }),
     ).toBeVisible();
     await page.waitForTimeout(900);
     await page.screenshot({
@@ -95,7 +98,9 @@ test("disposable demo uses real services, schedules, controls and logs", async (
       .click();
     await expect(detail.locator(".status")).toHaveText("Stopped");
     await page.keyboard.press("Escape");
-    await page.getByRole("link", { name: "Schedules", exact: true }).click();
+    await page
+      .getByRole("combobox", { name: "Filter kind" })
+      .selectOption("schedule");
     await page.getByRole("link", { name: "Inspect sample-backup" }).click();
     detail = page.getByRole("dialog", { name: "sample-backup", exact: true });
     await detail.getByRole("button", { name: "Run now", exact: true }).click();
@@ -120,7 +125,9 @@ test("disposable demo uses real services, schedules, controls and logs", async (
       detail.getByRole("button", { name: "Resume", exact: true }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
-    await page.getByRole("link", { name: "Overview", exact: true }).click();
+    await page
+      .getByRole("combobox", { name: "Filter kind" })
+      .selectOption("all");
     await page.waitForTimeout(900);
     expect(errors).toEqual([]);
     const video = page.video()!;

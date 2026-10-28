@@ -112,9 +112,10 @@ queueing, recovery, and CLI examples.
 ## Web workspace and demo
 
 Start the runtime, then run `rhythm ui` to open the workspace directly.
-Browse services and schedules, create owned work,
+Browse a single filterable list of services and schedules,
 control execution, inspect history and output, and acknowledge investigated
-uncertain completions. Like mergegate, the loopback workspace trusts local
+uncertain completions. Create work through the CLI; the browser focuses on
+inspection and controls. Like mergegate, the loopback workspace trusts local
 callers, including other OS accounts, to create/run commands with the runtime
 account's permissions.
 

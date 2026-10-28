@@ -23,11 +23,11 @@ test("open the CLI URL directly, reload, and open another tab without pairing", 
   });
   await page.goto(launch.url);
   await expect(
-    page.getByRole("heading", { name: "Background work, in view." }),
+    page.getByRole("heading", { name: "Work", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "New service", exact: true }),
-  ).toBeEnabled();
+    page.getByText("No work registered yet.", { exact: true }),
+  ).toBeVisible();
   expect(
     await page.evaluate(() => ({
       session: sessionStorage.length,
@@ -38,15 +38,15 @@ test("open the CLI URL directly, reload, and open another tab without pairing", 
   expect(credentials).toEqual([]);
   await page.reload();
   await expect(
-    page.getByRole("button", { name: "New schedule", exact: true }),
-  ).toBeEnabled();
+    page.getByText("No work registered yet.", { exact: true }),
+  ).toBeVisible();
   const context = await browser.newContext();
   try {
     const second = await context.newPage();
     await second.goto(launch.url);
     await expect(
-      second.getByRole("button", { name: "New service", exact: true }),
-    ).toBeEnabled();
+      second.getByText("No work registered yet.", { exact: true }),
+    ).toBeVisible();
   } finally {
     await context.close();
   }
@@ -61,22 +61,23 @@ test("open the CLI URL directly, reload, and open another tab without pairing", 
   expect(refused).toBe(401);
 });
 
-test("create service, start, inspect literal logs, cancel restart, restart, and stop", async ({
+test("CLI-created service can start, show literal logs, restart, and stop", async ({
   page,
 }) => {
   const errors: string[] = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  await runtime.create(
+    "service",
+    service(
+      "sample-ui-service",
+      'printf "<img src=x onerror=alert(1)>"; exec sleep 30',
+    ),
+  );
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New service", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New service" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-ui-service");
-  await form.getByLabel("Executable", { exact: true }).fill("/bin/sh");
-  await form
-    .getByLabel("Arguments")
-    .fill('-c\nprintf "<img src=x onerror=alert(1)>"; exec sleep 30');
-  await form
-    .getByRole("button", { name: "Create service", exact: true })
-    .click();
+  await expect(
+    page.getByRole("button", { name: /New service|Add service/ }),
+  ).toHaveCount(0);
+  await page.getByRole("link", { name: "Inspect sample-ui-service" }).click();
   const detail = page.getByRole("dialog", {
     name: "sample-ui-service",
     exact: true,
@@ -121,22 +122,19 @@ test("create service, start, inspect literal logs, cancel restart, restart, and 
   expect(errors).toEqual([]);
 });
 
-test("create schedule, run now, history, resume, pause, and cancel queued work", async ({
+test("CLI-created schedule can run now, show history, resume, pause, and cancel queued work", async ({
   page,
 }) => {
+  await runtime.create(
+    "schedule",
+    schedule(
+      "sample-ui-schedule",
+      "printf schedule-output; exec sleep 30",
+      500,
+    ),
+  );
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New schedule" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-ui-schedule");
-  await form.getByLabel("Executable", { exact: true }).fill("/bin/sh");
-  await form
-    .getByLabel("Arguments")
-    .fill("-c\nprintf schedule-output; exec sleep 30");
-  await form.getByLabel("Every (seconds)").fill("0.5");
-  await form.getByLabel("When already running").selectOption("queue_one");
-  await form
-    .getByRole("button", { name: "Create schedule", exact: true })
-    .click();
+  await page.getByRole("link", { name: "Inspect sample-ui-schedule" }).click();
   const detail = page.getByRole("dialog", {
     name: "sample-ui-schedule",
     exact: true,
@@ -175,7 +173,7 @@ test("create schedule, run now, history, resume, pause, and cancel queued work",
   expect(stored.response.schedule.pending).toBeNull();
 });
 
-test("daily and weekly creation, search filters, keyboard focus, responsive detail", async ({
+test("CLI calendar definitions, combined filters, keyboard focus, and responsive detail", async ({
   page,
 }) => {
   await runtime.command({
@@ -186,17 +184,28 @@ test("daily and weekly creation, search filters, keyboard focus, responsive deta
     operation: "schedule",
     command: { operation: "create", definition: schedule("sample-hidden") },
   });
+  await runtime.create("schedule", {
+    ...schedule("sample-weekly"),
+    trigger: {
+      type: "weekly",
+      weekdays: [1, 5],
+      hour: 9,
+      minute: 15,
+      timezone: "UTC",
+    },
+  });
+  await runtime.create("schedule", {
+    ...schedule("sample-daily"),
+    trigger: { type: "daily", hour: 18, minute: 30, timezone: "UTC" },
+  });
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New schedule" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-weekly");
-  await form.getByLabel("Trigger", { exact: true }).selectOption("weekly");
-  await form.getByLabel("Time", { exact: true }).fill("09:15");
-  await form.getByLabel("IANA timezone").fill("UTC");
-  await form.getByLabel("Fri", { exact: true }).check();
-  await form
-    .getByRole("button", { name: "Create schedule", exact: true })
-    .click();
+  await page
+    .getByRole("combobox", { name: "Filter kind" })
+    .selectOption("schedule");
+  await expect(
+    page.getByRole("link", { name: "Inspect sample-find" }),
+  ).toHaveCount(0);
+  await page.getByRole("link", { name: "Inspect sample-weekly" }).click();
   let detail = page.getByRole("dialog", { name: "sample-weekly", exact: true });
   await detail.getByRole("tab", { name: "Activity", exact: true }).focus();
   await page.keyboard.press("ArrowRight");
@@ -217,21 +226,16 @@ test("daily and weekly creation, search filters, keyboard focus, responsive deta
   await expect(detail.getByText("Mon, Fri at 09:15 · UTC")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(detail).toHaveCount(0);
-  await page.getByRole("button", { name: "New schedule", exact: true }).click();
-  const daily = page.getByRole("dialog", { name: "New schedule" });
-  await daily.getByLabel("Name", { exact: false }).fill("sample-daily");
-  await daily.getByLabel("Trigger", { exact: true }).selectOption("daily");
-  await daily.getByLabel("Time", { exact: true }).fill("18:30");
-  await daily.getByLabel("IANA timezone").fill("UTC");
-  await daily
-    .getByRole("button", { name: "Create schedule", exact: true })
-    .click();
+  await expect(page.getByRole("combobox", { name: "Filter kind" })).toHaveValue(
+    "schedule",
+  );
+  await page.getByRole("link", { name: "Inspect sample-daily" }).click();
   detail = page.getByRole("dialog", { name: "sample-daily", exact: true });
   await detail.getByRole("tab", { name: "Definition", exact: true }).click();
   await expect(detail.getByText("Daily at 18:30 · UTC")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(detail).toHaveCount(0);
-  await page.getByRole("link", { name: "Overview", exact: true }).click();
+  await page.getByRole("combobox", { name: "Filter kind" }).selectOption("all");
   await page.getByRole("searchbox", { name: "Search work" }).fill("find");
   await expect(
     page.getByRole("link", { name: "Inspect sample-find" }),
@@ -257,6 +261,63 @@ test("daily and weekly creation, search filters, keyboard focus, responsive deta
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
+});
+
+test("one list keeps same-name services and schedules distinct across deep links and filters", async ({
+  page,
+}) => {
+  await runtime.create("service", service("sample-shared"));
+  await runtime.create("schedule", schedule("sample-shared"));
+  await runtime.connect(page);
+  await expect(
+    page.getByRole("link", { name: "Inspect sample-shared" }),
+  ).toHaveCount(2);
+  await expect(
+    page.getByRole("button", {
+      name: /New service|New schedule|Add service|Add schedule/,
+    }),
+  ).toHaveCount(0);
+  await page
+    .getByRole("combobox", { name: "Filter kind" })
+    .selectOption("schedule");
+  await page
+    .getByRole("combobox", { name: "Filter state" })
+    .selectOption("paused");
+  await page.getByRole("searchbox", { name: "Search work" }).fill("SHARED");
+  await page.getByRole("link", { name: "Inspect sample-shared" }).click();
+  const detail = page.getByRole("dialog", {
+    name: "sample-shared",
+    exact: true,
+  });
+  await expect(
+    detail.getByRole("button", { name: "Run now", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("combobox", { name: "Filter kind" })).toHaveValue(
+    "schedule",
+  );
+  await expect(
+    page.getByRole("combobox", { name: "Filter state" }),
+  ).toHaveValue("paused");
+  await expect(
+    page.getByRole("searchbox", { name: "Search work" }),
+  ).toHaveValue("SHARED");
+  await page.goto(`${runtime.origin}/#/services/sample-shared`);
+  await expect(
+    detail.getByRole("button", { name: "Start", exact: true }),
+  ).toBeVisible();
+  await page.reload();
+  await expect(
+    detail.getByRole("button", { name: "Start", exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(detail).toHaveCount(0);
+  await expect(
+    page.getByRole("link", { name: "Inspect sample-shared" }),
+  ).toHaveCount(2);
+  await page.getByRole("searchbox", { name: "Search work" }).fill("missing");
+  await expect(page.getByText("No work matches these filters.")).toBeVisible();
+  await expect(page.getByText("No work registered yet.")).toHaveCount(0);
 });
 
 test("uncertain completion blocks new work until explicit cleanup acknowledgement", async ({
@@ -335,43 +396,35 @@ test("lost connection retains the snapshot, disables mutations, and recovers on 
     definition: service("sample-offline"),
   });
   await runtime.connect(page);
-  await page.getByRole("button", { name: "New service", exact: true }).click();
-  const form = page.getByRole("dialog", { name: "New service" });
-  await form.getByLabel("Name", { exact: false }).fill("sample-blocked");
-  await page.route("**/v1/browser/command", (r) => r.abort());
-  await expect(form.getByRole("alert")).toContainText("Connection lost");
-  await expect(
-    form.getByRole("button", { name: "Create service", exact: true }),
-  ).toBeDisabled();
-  await form.getByLabel("Name", { exact: false }).press("Enter");
-  expect((await runtime.command({ operation: "list" })).services).toHaveLength(
-    1,
-  );
-  await form.getByRole("button", { name: "Cancel", exact: true }).click();
-  await expect(form).toHaveCount(0);
-  await page.getByRole("button", { name: "Refresh workspace" }).click();
-  await expect(page.getByRole("alert")).toContainText("last snapshot");
-  await expect(
-    page.getByRole("button", { name: "New service", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Add service", exact: true }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("button", { name: "Add schedule", exact: true }),
-  ).toBeDisabled();
   await page.getByRole("link", { name: "Inspect sample-offline" }).click();
-  await expect(page.getByRole("dialog").getByRole("alert")).toBeVisible();
+  const detail = page.getByRole("dialog", {
+    name: "sample-offline",
+    exact: true,
+  });
+  await expect(
+    detail.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  await page.route("**/v1/browser/command", (r) => r.abort());
+  await expect(
+    detail.getByRole("button", { name: "Start", exact: true }),
+  ).toBeDisabled();
+  await expect(detail.getByRole("alert")).toContainText("could not refresh");
   await page.keyboard.press("Escape");
-  await expect(page.getByRole("dialog")).toHaveCount(0);
-  await page.unroute("**/v1/browser/command");
-  await page.getByRole("button", { name: "Retry", exact: true }).click();
-  await expect(page.getByRole("alert")).toHaveCount(0);
+  await expect(detail).toHaveCount(0);
+  await expect(page.getByRole("alert")).toContainText("last snapshot");
   await expect(
     page.getByRole("link", { name: "Inspect sample-offline" }),
   ).toBeVisible();
+  expect(
+    (await runtime.command({ operation: "history", id: "sample-offline" }))
+      .executions,
+  ).toHaveLength(0);
+  await page.unroute("**/v1/browser/command");
+  await page.getByRole("button", { name: "Retry", exact: true }).click();
+  await expect(page.getByRole("alert")).toHaveCount(0);
+  await page.getByRole("link", { name: "Inspect sample-offline" }).click();
   await expect(
-    page.getByRole("button", { name: "New service", exact: true }),
+    detail.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
 });
 
