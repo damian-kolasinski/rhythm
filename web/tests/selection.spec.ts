@@ -1,109 +1,84 @@
 import { test, expect } from "@playwright/test";
-import type { Item } from "../src/workloads/presentation";
-import { selectWork } from "../src/workloads/selection";
-import { workRoute, listHash } from "../src/workloads/navigation";
+import type { Schedule } from "../src/api/contracts";
+import { selectSchedules } from "../src/schedules/selection";
+import { scheduleRoute, detailHash } from "../src/schedules/navigation";
 
-const stopped: Item = {
-  kind: "service",
-  value: {
-    id: "sample-alpha",
-    desired: "stopped",
-    observed: { state: "stopped" },
-    latest_execution: null,
+const paused: Schedule = {
+  id: "sample-alpha",
+  enabled: false,
+  observed: { state: "idle" },
+  latest_execution: null,
+  next_run_at_ms: null,
+  pending: null,
+  last_decision: null,
+};
+const running: Schedule = {
+  ...paused,
+  id: "sample-running",
+  enabled: true,
+  observed: { state: "running", execution_id: 1 },
+  next_run_at_ms: 3000,
+};
+const failed: Schedule = {
+  ...paused,
+  id: "sample-failure",
+  latest_execution: {
+    id: 2,
+    schedule_id: "sample-failure",
+    invocation: { source: "manual", requested_at_ms: 1000 },
+    started_at_ms: 1000,
+    finished_at_ms: 2000,
+    outcome: { type: "exited", code: 4 },
+    recovery_acknowledged_at_ms: null,
   },
 };
-const running: Item = {
-  kind: "service",
-  value: {
-    id: "sample-running",
-    desired: "running",
-    observed: { state: "running", execution_id: 1 },
-    latest_execution: null,
-  },
+const enabled: Schedule = {
+  ...paused,
+  id: "sample-report",
+  enabled: true,
+  next_run_at_ms: 3000,
 };
-const failed: Item = {
-  kind: "service",
-  value: {
-    id: "sample-failure",
-    desired: "running",
-    observed: { state: "exited" },
-    latest_execution: {
-      id: 2,
-      started_at_ms: 1000,
-      finished_at_ms: 2000,
-      outcome: { type: "exited", code: 4 },
-      recovery_acknowledged_at_ms: null,
-    },
-  },
+const uncertain: Schedule = {
+  ...enabled,
+  id: "sample-uncertain",
+  observed: { state: "needs_attention" },
 };
-const paused: Item = {
-  kind: "schedule",
-  value: {
-    id: "sample-alpha",
-    enabled: false,
-    observed: { state: "idle" },
-    latest_execution: null,
-    next_run_at_ms: null,
-    pending: null,
-    last_decision: null,
-  },
-};
-const enabled: Item = {
-  kind: "schedule",
-  value: {
-    ...paused.value,
-    id: "sample-report",
-    enabled: true,
-    next_run_at_ms: 3000,
-  } as Extract<Item["value"], { enabled: boolean }>,
-};
-const uncertain: Item = {
-  kind: "schedule",
-  value: {
-    ...enabled.value,
-    id: "sample-uncertain",
-    observed: { state: "needs_attention" },
-  },
-};
-const work = [running, enabled, stopped, paused, uncertain, failed];
+const schedules = [running, enabled, paused, uncertain, failed];
 
-test("work selection puts attention first without merging same-name namespaces or mutating input", () => {
-  const selected = selectWork(work, "all", "all", "");
-  expect(selected).toEqual([
+test("schedule selection puts attention first without mutating input", () => {
+  expect(selectSchedules(schedules, "all", "")).toEqual([
     failed,
     uncertain,
     paused,
-    stopped,
     enabled,
     running,
   ]);
-  expect(work).toEqual([running, enabled, stopped, paused, uncertain, failed]);
-  expect(selectWork([], "all", "all", "")).toEqual([]);
+  expect(schedules).toEqual([running, enabled, paused, uncertain, failed]);
+  expect(selectSchedules([], "all", "")).toEqual([]);
 });
-
-test("work selection combines case-insensitive search, kind and state", () => {
-  expect(selectWork(work, "all", "attention", "")).toEqual([failed, uncertain]);
-  expect(selectWork(work, "service", "attention", "FAIL")).toEqual([failed]);
-  expect(selectWork(work, "schedule", "attention", "FAIL")).toEqual([]);
-  expect(selectWork(work, "all", "running", "")).toEqual([running]);
-  expect(selectWork(work, "all", "paused", "")).toEqual([paused, stopped]);
-  expect(selectWork(work, "schedule", "paused", "alpha")).toEqual([paused]);
+test("schedule selection combines case-insensitive search and state", () => {
+  expect(selectSchedules(schedules, "attention", "")).toEqual([
+    failed,
+    uncertain,
+  ]);
+  expect(selectSchedules(schedules, "attention", "FAIL")).toEqual([failed]);
+  expect(selectSchedules(schedules, "running", "")).toEqual([running]);
+  expect(selectSchedules(schedules, "paused", "")).toEqual([failed, paused]);
+  expect(selectSchedules(schedules, "paused", "alpha")).toEqual([paused]);
+  expect(selectSchedules(schedules, "all", "missing")).toEqual([]);
 });
-
-test("work routes preserve existing service and schedule links and reject malformed fragments", () => {
-  expect(workRoute("#/services/sample-alpha")).toEqual({
-    filter: "service",
-    detail: { kind: "service", id: "sample-alpha" },
-  });
-  expect(workRoute("#/schedules/sample%2Dalpha")).toEqual({
-    filter: "schedule",
-    detail: { kind: "schedule", id: "sample-alpha" },
-  });
-  expect(workRoute("#/schedules")).toEqual({ filter: "schedule" });
-  expect(workRoute("#/services/%E0%A4%A")).toEqual({ filter: "service" });
-  expect(workRoute("#/unknown/sample-alpha")).toEqual({ filter: "all" });
-  expect(workRoute("")).toEqual({ filter: "all" });
-  expect(listHash("all")).toBe("/");
-  expect(listHash("service")).toBe("/services");
-  expect(listHash("schedule")).toBe("/schedules");
+test("schedule detail routes accept bounded identifiers and reject malformed fragments", () => {
+  expect(scheduleRoute("#/sample-report")).toBe("sample-report");
+  expect(scheduleRoute("#/sample%2Dreport")).toBe("sample-report");
+  expect(detailHash("sample-report")).toBe("/sample-report");
+  for (const hash of [
+    "",
+    "#/",
+    "#/services/sample-report",
+    "#/schedules/sample-report",
+    "#/%E0%A4%A",
+    "#/../sample",
+    "#/" + "a".repeat(64),
+  ])
+    expect(scheduleRoute(hash)).toBeUndefined();
 });

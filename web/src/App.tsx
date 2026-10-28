@@ -1,36 +1,23 @@
 import { createMemo, createSignal, Show, onMount, onCleanup } from "solid-js";
 import { createApi } from "./api/client";
-import { createWorkspace } from "./workloads/workspace";
-import { items } from "./workloads/presentation";
-import {
-  selectWork,
-  type KindFilter,
-  type StateFilter,
-} from "./workloads/selection";
-import { workRoute, listHash } from "./workloads/navigation";
+import { createWorkspace } from "./schedules/workspace";
+import { selectSchedules, type StateFilter } from "./schedules/selection";
+import { scheduleRoute } from "./schedules/navigation";
 import { Icon } from "./components/Icon";
-import { WorkTable } from "./components/WorkTable";
-import { WorkDetail } from "./components/WorkDetail";
+import { ScheduleTable } from "./components/ScheduleTable";
+import { ScheduleDetail } from "./components/ScheduleDetail";
 
 export default function App() {
   const api = createApi();
   const data = createWorkspace(api);
-  const initial = workRoute(location.hash);
-  const [current, setCurrent] = createSignal(initial);
-  const [kind, setKind] = createSignal<KindFilter>(
-    initial.detail ? "all" : initial.filter,
-  );
+  const [current, setCurrent] = createSignal(scheduleRoute(location.hash));
   const [search, setSearch] = createSignal("");
   const [state, setState] = createSignal<StateFilter>("all");
   const [toast, setToast] = createSignal("");
   let searchInput: HTMLInputElement | undefined;
   let toastTimer: ReturnType<typeof setTimeout>;
-  const all = createMemo(() =>
-    items(data.snapshot()?.services ?? [], data.snapshot()?.schedules ?? []),
-  );
-  const filtered = createMemo(() =>
-    selectWork(all(), kind(), state(), search()),
-  );
+  const all = () => data.snapshot()?.schedules ?? [];
+  const filtered = createMemo(() => selectSchedules(all(), state(), search()));
 
   function notify(message: string) {
     setToast(message);
@@ -39,11 +26,7 @@ export default function App() {
     void data.refresh();
   }
   onMount(() => {
-    const change = () => {
-      const next = workRoute(location.hash);
-      setCurrent(next);
-      if (!next.detail) setKind(next.filter);
-    };
+    const change = () => setCurrent(scheduleRoute(location.hash));
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
@@ -68,7 +51,7 @@ export default function App() {
           document.getElementById("workspace-main")?.focus();
         }}
       >
-        Skip to work
+        Skip to schedules
       </a>
       <header class="topbar">
         <span class="brand">
@@ -104,8 +87,10 @@ export default function App() {
           </div>
         </Show>
         <div class="page-heading">
-          <h1>Work</h1>
-          <span class="subtle">{all().length} workloads</span>
+          <h1>Schedules</h1>
+          <span class="subtle">
+            {all().length} {all().length === 1 ? "schedule" : "schedules"}
+          </span>
         </div>
         <Show when={data.error()}>
           <div class="error-banner" role="alert">
@@ -114,7 +99,7 @@ export default function App() {
               <strong>
                 {data.snapshot()
                   ? "Connection lost · showing the last snapshot"
-                  : "Couldn’t load your work"}
+                  : "Couldn’t load your schedules"}
               </strong>
               <p>{data.error()}</p>
             </div>
@@ -128,7 +113,7 @@ export default function App() {
           fallback={
             <div class="loading-workspace" role="status">
               <div class="skeleton-table" />
-              <p>Loading work…</p>
+              <p>Loading schedules…</p>
             </div>
           }
         >
@@ -139,24 +124,13 @@ export default function App() {
                 <input
                   ref={searchInput}
                   type="search"
-                  aria-label="Search work"
-                  placeholder="Search work…"
+                  aria-label="Search schedules"
+                  placeholder="Search schedules…"
                   value={search()}
                   onInput={(e) => setSearch(e.currentTarget.value)}
                 />
                 <kbd>⌘ K</kbd>
               </label>
-              <select
-                aria-label="Filter kind"
-                value={kind()}
-                onChange={(e) => {
-                  location.hash = listHash(e.currentTarget.value as KindFilter);
-                }}
-              >
-                <option value="all">All work</option>
-                <option value="service">Services</option>
-                <option value="schedule">Schedules</option>
-              </select>
               <select
                 aria-label="Filter state"
                 value={state()}
@@ -165,12 +139,12 @@ export default function App() {
                 <option value="all">All states</option>
                 <option value="running">Running</option>
                 <option value="attention">Needs attention</option>
-                <option value="paused">Stopped or paused</option>
+                <option value="paused">Paused</option>
               </select>
             </div>
-            <WorkTable
-              items={filtered()}
-              filtered={!!search() || kind() !== "all" || state() !== "all"}
+            <ScheduleTable
+              schedules={filtered()}
+              filtered={!!search() || state() !== "all"}
             />
           </Show>
         </Show>
@@ -183,15 +157,14 @@ export default function App() {
           </div>
         </Show>
       </div>
-      <Show when={current().detail}>
-        {(detail) => (
-          <WorkDetail
-            kind={detail().kind}
-            id={detail().id}
+      <Show when={current()}>
+        {(id) => (
+          <ScheduleDetail
+            id={id()}
             api={api}
             offline={!!data.error()}
             close={() => {
-              location.hash = listHash(kind());
+              location.hash = "/";
             }}
             changed={notify}
           />

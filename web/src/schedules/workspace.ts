@@ -3,14 +3,11 @@ import { createStore, reconcile } from "solid-js/store";
 import { workspaceInfo, type Api } from "../api/client";
 import { errorMessage } from "../api/errors";
 import {
-  serviceListSchema,
   scheduleListSchema,
   statusSchema,
-  type Service,
   type Schedule,
 } from "../api/contracts";
 export type Snapshot = {
-  services: Service[];
   schedules: Schedule[];
   version: string;
   demo: boolean;
@@ -24,12 +21,8 @@ export function createWorkspace(api: Api) {
   let disposed = false;
   async function load() {
     try {
-      const [services, schedules, status, info] = await Promise.all([
-        api({ operation: "list" }, serviceListSchema),
-        api(
-          { operation: "schedule", command: { operation: "list" } },
-          scheduleListSchema,
-        ),
+      const [schedules, status, info] = await Promise.all([
+        api({ operation: "list" }, scheduleListSchema),
         api({ operation: "status" }, statusSchema),
         workspaceInfo(),
       ]);
@@ -38,8 +31,7 @@ export function createWorkspace(api: Api) {
           "snapshot",
           reconcile(
             {
-              services: services.services,
-              schedules: schedules.response.schedules,
+              schedules: schedules.schedules,
               version: status.version,
               demo: info.demo,
             },

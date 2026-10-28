@@ -56,17 +56,14 @@ export class Runtime {
     if (!response.ok) throw new Error("Fixture request failed");
     return response.json();
   }
-  async create<Definition extends { id: string }>(
-    kind: "service" | "schedule",
-    definition: Definition,
-  ) {
-    const file = join(this.dir, `${kind}-definition.json`);
+  async create(definition: { id: string; [field: string]: unknown }) {
+    const file = join(this.dir, "schedule-definition.json");
     await writeFile(file, JSON.stringify(definition), { mode: 0o600 });
     await execute(binary, [
       "--json",
       "--data-dir",
       join(this.dir, "state"),
-      kind,
+      "schedule",
       "create",
       "--file",
       file,
@@ -85,7 +82,9 @@ export class Runtime {
   async connect(page: Page) {
     const launch = await this.launch();
     await page.goto(launch.url);
-    await page.getByRole("heading", { name: "Work", exact: true }).waitFor();
+    await page
+      .getByRole("heading", { name: "Schedules", exact: true })
+      .waitFor();
   }
   async stop() {
     if (this.child.exitCode === null && this.child.signalCode === null) {
@@ -107,19 +106,6 @@ export class Runtime {
     }
     await rm(this.dir, { recursive: true, force: true });
   }
-}
-export function service(
-  id: string,
-  script = "exec sleep 30",
-  restart = "never",
-) {
-  return {
-    id,
-    command: ["/bin/sh", "-c", script],
-    working_directory: "/tmp",
-    restart,
-    restart_delay_ms: 1000,
-  };
 }
 export function schedule(
   id: string,

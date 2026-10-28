@@ -4,7 +4,7 @@ import { createInterface } from "node:readline";
 import { mkdir, rename } from "node:fs/promises";
 import { binary } from "./runtime";
 
-test("disposable demo uses real services, schedules, controls and logs", async ({
+test("disposable demo uses only real schedules, controls and logs", async ({
   browser,
 }, testInfo) => {
   test.setTimeout(45000);
@@ -53,8 +53,11 @@ test("disposable demo uses real services, schedules, controls and logs", async (
       page.getByText("Demo workspace", { exact: true }),
     ).toBeVisible();
     await expect(
-      page.getByRole("link", { name: "Inspect sample-indexer" }),
+      page.getByRole("heading", { name: "Schedules", exact: true }),
     ).toBeVisible();
+    await expect(
+      page.getByRole("combobox", { name: "Filter kind" }),
+    ).toHaveCount(0);
     await page.getByRole("button", { name: "Refresh workspace" }).click();
     await expect(
       page
@@ -81,26 +84,6 @@ test("disposable demo uses real services, schedules, controls and logs", async (
     );
     await page.waitForTimeout(900);
     await page.keyboard.press("Escape");
-    await page.getByRole("link", { name: "Inspect sample-notifier" }).click();
-    detail = page.getByRole("dialog", { name: "sample-notifier", exact: true });
-    await detail.getByRole("button", { name: "Start", exact: true }).click();
-    await expect(detail.locator(".status")).toHaveText("Running");
-    await detail
-      .getByRole("button", { name: /View logs for execution/ })
-      .first()
-      .click();
-    await expect(detail.getByTestId("stdout")).toContainText("Notifier ready");
-    await page.waitForTimeout(900);
-    await detail.getByRole("button", { name: "Stop", exact: true }).click();
-    await page
-      .getByRole("dialog", { name: "Stop this service?" })
-      .getByRole("button", { name: "Stop", exact: true })
-      .click();
-    await expect(detail.locator(".status")).toHaveText("Stopped");
-    await page.keyboard.press("Escape");
-    await page
-      .getByRole("combobox", { name: "Filter kind" })
-      .selectOption("schedule");
     await page.getByRole("link", { name: "Inspect sample-backup" }).click();
     detail = page.getByRole("dialog", { name: "sample-backup", exact: true });
     await detail.getByRole("button", { name: "Run now", exact: true }).click();
@@ -125,9 +108,6 @@ test("disposable demo uses real services, schedules, controls and logs", async (
       detail.getByRole("button", { name: "Resume", exact: true }),
     ).toBeVisible();
     await page.keyboard.press("Escape");
-    await page
-      .getByRole("combobox", { name: "Filter kind" })
-      .selectOption("all");
     await page.waitForTimeout(900);
     expect(errors).toEqual([]);
     const video = page.video()!;

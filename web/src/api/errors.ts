@@ -11,7 +11,7 @@ export function errorMessage(error: unknown): string {
         unauthorized:
           "The runtime refused this request. Open its local workspace URL and retry.",
         not_found:
-          "This workload is no longer available. Refresh the workspace.",
+          "This schedule is no longer available. Refresh the workspace.",
         already_exists: "That name is already in use. Choose another name.",
         busy: "A run is already active or queued. Wait for it to finish, or cancel it first.",
         recovery_required:

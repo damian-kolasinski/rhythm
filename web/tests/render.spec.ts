@@ -1,24 +1,15 @@
 import { test, expect, type Route } from "@playwright/test";
 import { Runtime } from "./runtime";
-import { cadence, when } from "../src/workloads/presentation";
+import { cadence, when } from "../src/schedules/presentation";
 const now = Date.parse("2026-01-15T09:00:00Z");
-const run = (id: number, outcome: any) => ({
+const run = (id: number, owner: string, outcome: any) => ({
   id,
+  schedule_id: owner,
+  invocation: { source: "manual", requested_at_ms: now - 60000 },
   started_at_ms: now - 60000,
   finished_at_ms: outcome ? now - 30000 : null,
   outcome,
   recovery_acknowledged_at_ms: null,
-});
-const service = (id: string, state: string, outcome: any, execution = 1) => ({
-  id,
-  desired: state === "stopped" ? "stopped" : "running",
-  observed: {
-    state,
-    ...(state === "running" || state === "recovering"
-      ? { execution_id: execution }
-      : {}),
-  },
-  latest_execution: state === "stopped" ? null : run(execution, outcome),
 });
 const schedule = (
   id: string,
@@ -30,22 +21,20 @@ const schedule = (
   id,
   enabled,
   observed: { state },
-  latest_execution: outcome ? run(execution, outcome) : null,
-  next_run_at_ms: enabled ? now + 5400000 : null,
+  latest_execution:
+    outcome || ["running", "recovering"].includes(state)
+      ? run(execution, id, outcome)
+      : null,
+  next_run_at_ms: enabled && state !== "needs_attention" ? now + 5400000 : null,
   pending: null,
   last_decision: null,
 });
-const standard = {
-  services: [
-    service("sample-indexer", "running", null),
-    service("sample-export", "exited", { type: "exited", code: 4 }, 2),
-    service("sample-notifier", "stopped", null),
-  ],
-  schedules: [
-    schedule("sample-report", true),
-    schedule("sample-backup", false),
-  ],
-};
+const standard = [
+  schedule("sample-report", true, "running"),
+  schedule("sample-export", false, "idle", { type: "exited", code: 4 }, 2),
+  schedule("sample-backup", false),
+  schedule("sample-cleanup", true),
+];
 let runtime: Runtime;
 test.beforeEach(async () => {
   runtime = await Runtime.start();
@@ -54,12 +43,7 @@ test.afterEach(async () => {
   await runtime.stop();
 });
 
-async function mock(
-  route: Route,
-  services: any[],
-  schedules: any[],
-  error = false,
-) {
+async function mock(route: Route, schedules: any[], error = false) {
   const body = route.request().postDataJSON();
   if (error)
     return route.fulfill({
@@ -67,24 +51,22 @@ async function mock(
       json: { error: { code: "runtime_unavailable" } },
     });
   if (body.operation === "status")
-    return route.fulfill({ json: { type: "runtime", version: "0.1.0" } });
+    return route.fulfill({ json: { type: "runtime", version: "0.1.1" } });
   if (body.operation === "list")
-    return route.fulfill({ json: { type: "services", services } });
-  if (body.operation === "schedule" && body.command.operation === "list")
-    return route.fulfill({
-      json: { type: "schedule", response: { type: "schedules", schedules } },
-    });
+    return route.fulfill({ json: { type: "schedules", schedules } });
   if (body.operation === "inspect")
     return route.fulfill({
       json: {
-        type: "service",
-        service: services.find((s) => s.id === body.id),
+        type: "schedule",
+        schedule: schedules.find((s) => s.id === body.id),
         definition: {
           id: body.id,
           command: ["/bin/sh", "-c", "printf sample-output"],
           working_directory: "/tmp",
-          restart: "never",
-          restart_delay_ms: 1000,
+          trigger: { type: "interval", every_ms: 60000 },
+          overlap: "skip",
+          missed: "run_once",
+          grace_ms: 1000,
         },
       },
     });
@@ -93,7 +75,7 @@ async function mock(
       json: {
         type: "history",
         executions: [
-          services.find((s) => s.id === body.id)?.latest_execution,
+          schedules.find((s) => s.id === body.id)?.latest_execution,
         ].filter(Boolean),
       },
     });
@@ -123,39 +105,32 @@ for (const state of [
     await page.addInitScript((value) => {
       Date.now = () => value;
     }, now);
-    const services =
-      state === "empty"
-        ? []
-        : state === "attention"
-          ? [
-              service("sample-uncertain", "needs_attention", {
-                type: "monitor_lost",
-              }),
-            ]
-          : state === "recovering"
-            ? [service("sample-recovering", "recovering", null)]
-            : state === "unsupported-response"
-              ? [service("sample-unknown", "unknown", null)]
-              : standard.services;
     const schedules =
       state === "empty"
         ? []
         : state === "attention"
           ? [
+              schedule("sample-uncertain", true, "needs_attention", {
+                type: "monitor_lost",
+              }),
               schedule("sample-output", true, "needs_attention", {
                 type: "output_unavailable",
               }),
             ]
-          : standard.schedules;
+          : state === "recovering"
+            ? [schedule("sample-recovering", true, "recovering")]
+            : state === "unsupported-response"
+              ? [schedule("sample-unknown", true, "unknown")]
+              : standard;
     await page.route("**/v1/browser/command", (r) =>
-      mock(r, services, schedules, state === "error"),
+      mock(r, schedules, state === "error"),
     );
     await page.goto(runtime.origin);
     if (state === "error" || state === "unsupported-response")
       await expect(page.getByRole("alert")).toBeVisible();
     else
       await expect(
-        page.getByRole("region", { name: "Work list", exact: true }),
+        page.getByRole("region", { name: "Schedule list", exact: true }),
       ).toBeVisible();
     await expect(page).toHaveScreenshot(`${state}.png`, { fullPage: true });
   });
@@ -168,7 +143,7 @@ test("render loading", async ({ page, context }) => {
     requests.push(route);
   });
   await page.goto(runtime.origin);
-  await expect(page.getByText("Loading work…")).toBeVisible();
+  await expect(page.getByText("Loading schedules…")).toBeVisible();
   await page.keyboard.press("Control+k");
   await page.keyboard.press("Meta+k");
   expect(errors).toEqual([]);
@@ -179,23 +154,23 @@ test("render mobile list", async ({ page }) => {
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
-  await page.route("**/v1/browser/command", (r) =>
-    mock(r, standard.services, standard.schedules),
-  );
+  await page.route("**/v1/browser/command", (r) => mock(r, standard));
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(runtime.origin);
   await expect(
-    page.getByRole("link", { name: "Inspect sample-indexer" }),
+    page.getByRole("link", { name: "Inspect sample-report" }),
   ).toBeVisible();
   await expect(page).toHaveScreenshot("mobile.png", { fullPage: true });
 });
 test("render no matching work", async ({ page }) => {
-  await page.route("**/v1/browser/command", (r) =>
-    mock(r, standard.services, standard.schedules),
-  );
+  await page.route("**/v1/browser/command", (r) => mock(r, standard));
   await page.goto(runtime.origin);
-  await page.getByRole("searchbox", { name: "Search work" }).fill("missing");
-  await expect(page.getByText("No work matches these filters.")).toBeVisible();
+  await page
+    .getByRole("searchbox", { name: "Search schedules" })
+    .fill("missing");
+  await expect(
+    page.getByText("No schedules match these filters."),
+  ).toBeVisible();
   await expect(page).toHaveScreenshot("no-matches.png", { fullPage: true });
 });
 
@@ -207,11 +182,7 @@ test("render narrow list with long names and upcoming timing", async ({
   }, now);
   const longName = "sample-" + "a".repeat(56);
   await page.route("**/v1/browser/command", (r) =>
-    mock(
-      r,
-      [...standard.services, service(longName, "stopped", null)],
-      standard.schedules,
-    ),
+    mock(r, [...standard, schedule(longName, false)]),
   );
   await page.setViewportSize({ width: 712, height: 900 });
   await page.goto(runtime.origin);
@@ -222,7 +193,7 @@ test("render narrow list with long names and upcoming timing", async ({
     page.getByRole("columnheader", { name: "Next run", exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("table", { name: "Work", exact: true }),
+    page.getByRole("table", { name: "Schedules", exact: true }),
   ).toContainText("in 1h 30m");
   expect(
     await page.evaluate(
@@ -239,11 +210,17 @@ test("render uncertain cleanup and literal execution output", async ({
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
-  const services = [
-    service("sample-uncertain", "needs_attention", { type: "monitor_lost" }),
+  const schedules = [
+    schedule(
+      "sample-uncertain",
+      true,
+      "needs_attention",
+      { type: "monitor_lost" },
+      1,
+    ),
   ];
-  await page.route("**/v1/browser/command", (r) => mock(r, services, []));
-  await page.goto(`${runtime.origin}/#/services/sample-uncertain`);
+  await page.route("**/v1/browser/command", (r) => mock(r, schedules));
+  await page.goto(`${runtime.origin}/#/sample-uncertain`);
   const dialog = page.getByRole("dialog", {
     name: "sample-uncertain",
     exact: true,
@@ -285,15 +262,13 @@ test("render mobile detail", async ({ page, context }) => {
   await page.addInitScript((value) => {
     Date.now = () => value;
   }, now);
-  await page.route("**/v1/browser/command", (r) =>
-    mock(r, standard.services, standard.schedules),
-  );
+  await page.route("**/v1/browser/command", (r) => mock(r, standard));
   await page.goto(runtime.origin);
   await expect(
-    page.getByRole("link", { name: "Inspect sample-indexer" }),
+    page.getByRole("link", { name: "Inspect sample-report" }),
   ).toBeVisible();
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("link", { name: "Inspect sample-indexer" }).click();
+  await page.getByRole("link", { name: "Inspect sample-report" }).click();
   await expect(page.getByRole("dialog").locator(".status")).toHaveText(
     "Running",
   );
@@ -306,12 +281,10 @@ for (const theme of ["light", "dark"] as const) {
     await page.addInitScript((value) => {
       Date.now = () => value;
     }, now);
-    await page.route("**/v1/browser/command", (r) =>
-      mock(r, standard.services, standard.schedules),
-    );
+    await page.route("**/v1/browser/command", (r) => mock(r, standard));
     await page.goto(runtime.origin);
     await expect(
-      page.getByRole("link", { name: "Inspect sample-indexer" }),
+      page.getByRole("link", { name: "Inspect sample-report" }),
     ).toBeVisible();
     await page.evaluate(() => document.fonts.ready);
     expect(

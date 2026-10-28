@@ -168,27 +168,6 @@ tbody tr:hover {
   font-weight: 600;
   overflow-wrap: anywhere;
 }
-.work-name > span:last-child {
-  min-width: 0;
-}
-.work-name small {
-  display: block;
-  color: var(--text-secondary);
-  margin-top: 3px;
-}
-.work-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  flex-shrink: 0;
-  color: var(--text-secondary);
-}
-.work-icon svg {
-  width: 17px;
-  height: 17px;
-}
 .table-outcome,
 .next-run {
   color: var(--text-secondary);
@@ -284,9 +263,6 @@ tbody tr:hover {
   th,
   td {
     padding: 12px;
-  }
-  .work-icon {
-    display: none;
   }
 }
 @media (max-width: 520px) {

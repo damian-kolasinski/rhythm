@@ -1,10 +1,7 @@
 export type IconName =
   | "wave"
-  | "grid"
-  | "service"
   | "clock"
   | "search"
-  | "plus"
   | "arrow"
   | "close"
   | "check"
@@ -14,19 +11,11 @@ export type IconName =
   | "refresh"
   | "stop"
   | "terminal"
-  | "logout"
-  | "chevron"
-  | "file";
+  | "chevron";
 const paths: Record<IconName, string[]> = {
   wave: ["M2 12h4l3-8 5 16 3-8h5"],
-  grid: ["M3 3h7v7H3zM14 3h7v7h-7zM3 14h7v7H3zM14 14h7v7h-7z"],
-  service: [
-    "M4 5h16v6H4zM4 15h16v5H4z",
-    "M7 8h.01M7 17.5h.01M11 8h6M11 17.5h6",
-  ],
   clock: ["M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20", "M12 6v6l4 2"],
   search: ["M21 21l-5-5", "M10 18a8 8 0 1 0 0-16 8 8 0 0 0 0 16"],
-  plus: ["M12 5v14M5 12h14"],
   arrow: ["M5 12h14M14 7l5 5-5 5"],
   close: ["M6 6l12 12M18 6 6 18"],
   check: ["m5 12 4 4L19 6"],
@@ -42,9 +31,7 @@ const paths: Record<IconName, string[]> = {
   ],
   stop: ["M5 5h14v14H5z"],
   terminal: ["m4 5 6 6-6 6M13 18h7"],
-  logout: ["M9 3H4v18h5M13 8l5 4-5 4M8 12h13"],
   chevron: ["m9 5 7 7-7 7"],
-  file: ["M14 2H5v20h14V7zM14 2v6h6M8 13h8M8 17h6"],
 };
 export function Icon(props: { name: IconName; class?: string }) {
   return (
