@@ -239,9 +239,9 @@ async fn embedded_assets_and_errors_enforce_response_policy_without_private_data
     );
 }
 #[tokio::test]
-async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
+async fn browser_commands_share_schedule_execution_state_and_reject_services() {
     let f = Fixture::new().await;
-    let definition = json!({"id":"sample-browser","command":["/bin/sh","-c","printf browser-output"],"working_directory":"/tmp","restart":"never"});
+    let definition = json!({"id":"sample-browser","command":["/bin/sh","-c","printf browser-output"],"working_directory":"/tmp","trigger":{"type":"interval","every_ms":1000},"overlap":"skip","missed":"skip"});
     assert!(
         f.command(json!({"operation":"create","definition":definition}))
             .await
@@ -249,7 +249,7 @@ async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
             .is_success()
     );
     assert!(
-        f.command(json!({"operation":"start","id":"sample-browser"}))
+        f.command(json!({"operation":"run_now","id":"sample-browser"}))
             .await
             .status()
             .is_success()
@@ -275,31 +275,42 @@ async fn browser_commands_use_the_same_service_schedule_and_execution_state() {
         .await
         .unwrap();
     assert_eq!(logs["stdout"], "browser-output");
-    let definition = json!({"id":"sample-browser","command":["/usr/bin/true"],"working_directory":"/tmp","trigger":{"type":"interval","every_ms":1000},"overlap":"skip","missed":"skip"});
-    assert!(
-        f.command(
-            json!({"operation":"schedule","command":{"operation":"create","definition":definition}})
-        )
-        .await
-        .status()
-        .is_success()
+    for operation in ["start", "stop", "restart", "service"] {
+        assert_eq!(
+            f.command(json!({"operation":operation,"id":"sample-browser"}))
+                .await
+                .status(),
+            400
+        );
+    }
+    let removed_definition = json!({"operation":"create","definition":{"id":"sample-removed","command":["/bin/true"],"working_directory":"/tmp","restart":"always"}});
+    assert_eq!(f.command(removed_definition.clone()).await.status(), 400);
+    let access = rhythm::local_access::Access::read(&f.root).unwrap();
+    assert_eq!(
+        f.client
+            .post(format!("{}/v1/command", f.url))
+            .bearer_auth(access.credential())
+            .json(&removed_definition)
+            .send()
+            .await
+            .unwrap()
+            .status(),
+        400
     );
-    let services = local_api::call(&f.root, &rhythm::services::Request::List)
+    assert_eq!(
+        f.command(json!({"operation":"schedule","command":{"operation":"list"}}))
+            .await
+            .status(),
+        400
+    );
+    let schedules = local_api::call(&f.root, &rhythm::schedules::Request::List)
         .await
         .unwrap();
-    assert!(matches!(services,rhythm::services::Response::Services{services} if services.len()==1));
-    let schedules = local_api::call(
-        &f.root,
-        &Request::Schedule {
-            command: rhythm::schedules::Request::List,
-        },
-    )
-    .await
-    .unwrap();
     assert!(
-        matches!(schedules,rhythm::runtime_protocol::Response::Schedule{response:rhythm::schedules::Response::Schedules{schedules}} if schedules.len()==1)
+        matches!(schedules, rhythm::schedules::Response::Schedules{schedules} if schedules.len()==1)
     );
 }
+
 #[tokio::test]
 async fn browser_launcher_rejects_unexpected_or_oversized_info_from_a_reused_port() {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

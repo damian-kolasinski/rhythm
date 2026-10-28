@@ -1,5 +1,7 @@
 #![cfg(unix)]
-use rhythm::{execution_records::*, local_api, private_storage::Root, schedules, services::Error};
+use rhythm::{
+    execution_records::*, local_api, operation_error::Error, private_storage::Root, schedules,
+};
 use serde_json::{Value, json};
 use std::{
     fs,
@@ -74,13 +76,11 @@ impl Fixture {
         self.cli(&["schedule", "create", "--file", file.to_str().unwrap()]);
     }
     fn inspect(&self, id: &str) -> Value {
-        self.cli(&["schedule", "inspect", id])["response"]["schedule"].clone()
+        self.cli(&["schedule", "inspect", id])["schedule"].clone()
     }
     fn history(&self, id: &str) -> Vec<Execution> {
-        serde_json::from_value(
-            self.cli(&["schedule", "history", id])["response"]["executions"].clone(),
-        )
-        .unwrap()
+        serde_json::from_value(self.cli(&["schedule", "history", id])["executions"].clone())
+            .unwrap()
     }
     async fn running(&self, id: &str, count: usize) -> Vec<Execution> {
         for _ in 0..250 {
@@ -154,7 +154,7 @@ fn process_running(pid: i32) -> bool {
 }
 
 #[tokio::test]
-async fn cli_manual_history_logs_and_namespaced_service_coexistence() {
+async fn cli_manual_history_logs_and_persistence() {
     let mut f = Fixture::new().await;
     f.create(
         "sample-work",
@@ -166,7 +166,7 @@ async fn cli_manual_history_logs_and_namespaced_service_coexistence() {
     );
     assert_eq!(f.inspect("sample-work")["enabled"], false);
     assert_eq!(
-        f.cli(&["schedule", "list"])["response"]["schedules"]
+        f.cli(&["schedule", "list"])["schedules"]
             .as_array()
             .unwrap()
             .len(),
@@ -176,38 +176,10 @@ async fn cli_manual_history_logs_and_namespaced_service_coexistence() {
     let records = f.finished("sample-work", 1).await;
     assert_eq!(records.len(), 1);
     assert_eq!(records[0].outcome, Some(Outcome::Exited { code: 7 }));
-    assert!(matches!(
-        records[0].owner,
-        ExecutionOwner::Schedule {
-            invocation: Invocation::Manual { .. },
-            ..
-        }
-    ));
+    assert!(matches!(records[0].invocation, Invocation::Manual { .. }));
     let logs = f.cli(&["schedule", "logs", &records[0].id.to_string()]);
     assert_eq!(logs["stdout"], "schedule-output");
     assert_eq!(logs["stderr"], "schedule-error");
-    let definition = f.temp.path().join("service.json");
-    fs::write(&definition,json!({"id":"sample-work","command":["/bin/sh","-c","printf service-output"],"working_directory":f.temp.path(),"restart":"never"}).to_string()).unwrap();
-    f.cli(&["service", "create", "--file", definition.to_str().unwrap()]);
-    f.cli(&["service", "start", "sample-work"]);
-    let mut service_runs: Vec<Execution> = vec![];
-    for _ in 0..150 {
-        service_runs = serde_json::from_value(
-            f.cli(&["service", "history", "sample-work"])["executions"].clone(),
-        )
-        .unwrap();
-        if service_runs.first().is_some_and(|e| e.outcome.is_some()) {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(20)).await;
-    }
-    assert_eq!(service_runs.len(), 1);
-    assert_eq!(service_runs[0].outcome, Some(Outcome::Exited { code: 0 }));
-    assert_ne!(service_runs[0].id, records[0].id);
-    assert_eq!(
-        f.cli(&["service", "logs", &service_runs[0].id.to_string()])["stdout"],
-        "service-output"
-    );
     f.stop(false).await;
     f.reopen().await;
     assert_eq!(f.history("sample-work").len(), 1);
@@ -302,13 +274,7 @@ async fn queued_manual_invocation_survives_runtime_crash_after_old_workload_stop
     assert_eq!(runs[1].id, first.id);
     assert_eq!(runs[1].outcome, Some(Outcome::Interrupted));
     assert!(!process_running(pid));
-    assert!(matches!(
-        runs[0].owner,
-        ExecutionOwner::Schedule {
-            invocation: Invocation::Manual { .. },
-            ..
-        }
-    ));
+    assert!(matches!(runs[0].invocation, Invocation::Manual { .. }));
     f.cli(&["schedule", "cancel", "sample-durable"]);
     f.finished("sample-durable", 2).await;
     f.stop(false).await;
@@ -348,7 +314,7 @@ async fn missed_policy_and_interval_phase_survive_real_runtime_downtime() {
             let runs = f.finished("sample-downtime", 1).await;
             assert_eq!(runs.len(), 1);
             assert!(
-                matches!(runs[0].owner,ExecutionOwner::Schedule{invocation:Invocation::Scheduled{scheduled_for_ms},..} if scheduled_for_ms==due)
+                matches!(runs[0].invocation,Invocation::Scheduled{scheduled_for_ms} if scheduled_for_ms==due)
             );
         }
         f.stop(false).await;
@@ -367,10 +333,8 @@ async fn invalid_calendar_definition_fails_without_source_echo() {
     assert!(matches!(
         local_api::call(
             &f.root,
-            &rhythm::runtime_protocol::Request::Schedule {
-                command: schedules::Request::Inspect {
-                    id: "missing".parse().unwrap()
-                }
+            &schedules::Request::Inspect {
+                id: "missing".parse().unwrap()
             }
         )
         .await,

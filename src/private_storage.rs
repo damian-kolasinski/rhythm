@@ -1,5 +1,5 @@
 //! Private filesystem boundary. Never echo paths or OS error messages.
-use crate::services::{Error, Result};
+use crate::operation_error::{Error, Result};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{
     fs::{self, File, OpenOptions},

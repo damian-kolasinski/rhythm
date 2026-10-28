@@ -1,4 +1,4 @@
-//! Validated foreground execution input shared by services and schedules.
+//! Validated foreground execution input for finite scheduled runs.
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 

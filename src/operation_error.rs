@@ -7,6 +7,7 @@ pub enum Error {
     AlreadyExists,
     Busy,
     StorageUnavailable,
+    UnsupportedSchema,
     ExecutionUnavailable,
     RecoveryRequired,
     RuntimeUnavailable,

@@ -7,8 +7,6 @@ use crate::{
     operation_error::{Error, Result},
     private_storage::Root,
     runtime_protocol::{Request, Response},
-    service_store::SqliteStore,
-    services::Manager,
 };
 use std::path::PathBuf;
 use tokio::{
@@ -21,10 +19,8 @@ pub async fn run(root: Root, executable: PathBuf) -> Result<()> {
 }
 pub async fn run_presented(root: Root, executable: PathBuf, demo: bool) -> Result<()> {
     let _lock = root.lock()?;
-    let store = SqliteStore::open(&root)?;
     let executions = crate::execution_reader::SqliteExecutionReader::open(&root)?;
     let log_host = ProcessHost::new(root.clone(), executable.clone());
-    let mut manager = Manager::new(store, ProcessHost::new(root.clone(), executable.clone()))?;
     let mut schedules = crate::schedules::Manager::new(
         crate::schedule_store::SqliteScheduleStore::open(&root)?,
         ProcessHost::new(root.clone(), executable),
@@ -66,13 +62,12 @@ pub async fn run_presented(root: Root, executable: PathBuf, demo: bool) -> Resul
     let mut ticks = interval(Duration::from_millis(25));
     let mut shutdown_requested = false;
     let result: Result<()> = async {
-        manager.tick()?;
         schedules.tick()?;
         loop {
             tokio::select! {
-                _=ticks.tick()=>{manager.tick()?;schedules.tick()?;},
+                _=ticks.tick()=>{schedules.tick()?;},
                 Some((request,reply))=rx.recv()=>{
-                    let result=match request {Request::Schedule{command}=>schedules.request(command).map(|response|Response::Schedule{response}),Request::Service(request)=>manager.request(request).map(Response::Service),
+                    let result=match request {Request::Schedule(command)=>schedules.request(command).map(Response::Schedule),
                         Request::Status=>Ok(Response::Runtime{version:env!("CARGO_PKG_VERSION").into()}),
                         Request::Shutdown=>{shutdown_requested=true;Ok(Response::Runtime{version:env!("CARGO_PKG_VERSION").into()})},
                         Request::Logs{execution_id}=>executions.get(execution_id).and_then(|_|log_host.logs(execution_id)).map(|(stdout,stderr)|Response::Logs{stdout,stderr})};
@@ -83,12 +78,10 @@ pub async fn run_presented(root: Root, executable: PathBuf, demo: bool) -> Resul
                 break;
             }
         }
-        manager.release();
         schedules.shutdown();
         let deadline = Instant::now() + Duration::from_secs(3);
-        while (!manager.quiescent() || !schedules.quiescent()) && Instant::now() < deadline {
-            manager.tick()?;
-            schedules.tick()?;
+        while !schedules.quiescent() && Instant::now() < deadline {
+                schedules.tick()?;
             tokio::time::sleep(Duration::from_millis(25)).await;
         }
         Ok(())
@@ -98,7 +91,6 @@ pub async fn run_presented(root: Root, executable: PathBuf, demo: bool) -> Resul
     while let Ok((_, reply)) = rx.try_recv() {
         let _ = reply.send(Err(Error::RuntimeUnavailable));
     }
-    manager.release();
     schedules.shutdown();
     signals.abort();
     let _ = shutdown_tx.send(true);

@@ -2,10 +2,10 @@
 use rhythm::{
     execution::ProcessHost,
     execution_records::*,
+    operation_error::Error,
     private_storage::{self, Root},
     schedule_store::SqliteScheduleStore,
     schedules::{self, *},
-    services::Error,
 };
 use serde_json::json;
 use std::{cell::Cell, path::PathBuf, rc::Rc, time::Duration};
@@ -88,7 +88,7 @@ async fn daily_and_weekly_calendar_boundaries_dispatch_real_processes_once() {
     for execution in [&daily, &weekly] {
         assert_eq!(execution.outcome, Some(Outcome::Exited { code: 7 }));
         assert!(
-            matches!(execution.owner,ExecutionOwner::Schedule{invocation:Invocation::Scheduled{scheduled_for_ms},..} if scheduled_for_ms==due)
+            matches!(execution.invocation,Invocation::Scheduled{scheduled_for_ms} if scheduled_for_ms==due)
         );
         assert_eq!(
             std::fs::read_to_string(root.run(execution.id).unwrap().join("stdout.log")).unwrap(),
@@ -139,12 +139,9 @@ async fn allocation_before_launch_is_recovered_using_the_same_execution_id() {
     assert_eq!(execution.id, run);
     assert_eq!(execution.outcome, Some(Outcome::Exited { code: 7 }));
     assert!(matches!(
-        execution.owner,
-        ExecutionOwner::Schedule {
-            invocation: Invocation::Manual {
-                requested_at_ms: 1000
-            },
-            ..
+        execution.invocation,
+        Invocation::Manual {
+            requested_at_ms: 1000
         }
     ));
 }
@@ -186,4 +183,48 @@ fn launch_marker_without_pid_is_uncertain_and_never_retried() {
         }),
         Err(Error::RecoveryRequired)
     ));
+}
+
+#[test]
+fn durable_success_is_recovered_without_replaying_a_completed_invocation() {
+    let temp = TempDir::new().unwrap();
+    let root = Root::open(temp.path().join("state")).unwrap();
+    let _lock = root.lock().unwrap();
+    let time = Time(Rc::new(Cell::new(1000)));
+    let mut m = open(&root, time.clone());
+    create(
+        &mut m,
+        temp.path(),
+        "sample-completed",
+        json!({"type":"interval","every_ms":1000}),
+    );
+    m.request(Request::RunNow {
+        id: id("sample-completed"),
+    })
+    .unwrap();
+    drop(m);
+    let mut store = SqliteScheduleStore::open(&root).unwrap();
+    let run = store.begin(&id("sample-completed"), 1000).unwrap();
+    private_storage::write_json(
+        &root.run(run).unwrap().join("result.json"),
+        &Completion {
+            outcome: Outcome::Exited { code: 0 },
+            finished_at_ms: 2000,
+        },
+    )
+    .unwrap();
+    drop(store);
+    let mut m = open(&root, time);
+    m.tick().unwrap();
+    m.tick().unwrap();
+    let records = history(&mut m, "sample-completed");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].id, run);
+    assert_eq!(records[0].outcome, Some(Outcome::Exited { code: 0 }));
+    assert_eq!(
+        records[0].invocation,
+        Invocation::Manual {
+            requested_at_ms: 1000
+        }
+    );
 }

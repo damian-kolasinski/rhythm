@@ -19,7 +19,7 @@ impl<S: ScheduleStore, H: ExecutionHost, C: Clock> Manager<S, H, C> {
         let recovering = store
             .active()?
             .into_iter()
-            .map(|e| (e.owner.id().clone(), e))
+            .map(|e| (e.schedule_id.clone(), e))
             .collect();
         Ok(Self {
             store,

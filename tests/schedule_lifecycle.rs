@@ -1,9 +1,10 @@
 use rhythm::{
+    execution_host::ExecutionHost,
     execution_records::*,
+    operation_error::{Error, Result},
     private_storage::Root,
     schedule_store::SqliteScheduleStore,
     schedules::{self, *},
-    services::{Error, ExecutionHost, Result},
 };
 use serde_json::json;
 use std::{
@@ -114,10 +115,7 @@ fn history(m: &mut Scheduler, s: &str) -> Vec<Execution> {
     }
 }
 fn invocation(run: &Execution) -> Invocation {
-    match run.owner {
-        ExecutionOwner::Schedule { invocation, .. } => invocation,
-        _ => panic!("schedule owner"),
-    }
+    run.invocation
 }
 
 #[test]
