@@ -474,7 +474,7 @@ async fn lost_monitor_blocks_queue_after_restart_and_requires_cleanup_acknowledg
 
 #[cfg(target_os = "macos")]
 #[tokio::test]
-#[ignore = "requires macOS GUI launchd; installs and removes one disposable schedule runtime"]
+#[ignore = "requires macOS user launchd; installs and removes one disposable schedule runtime"]
 async fn launchd_runtime_executes_and_restores_persisted_schedules_end_to_end() {
     let mut f = Fixture::new().await;
     struct Cleanup(Root);

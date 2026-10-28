@@ -12,7 +12,28 @@ use std::{
 pub struct LaunchdRuntime {
     agents: PathBuf,
     launchctl: PathBuf,
-    domain: String,
+    user: u32,
+}
+
+#[derive(Clone, Copy)]
+enum Session {
+    Background,
+    Aqua,
+}
+impl Session {
+    fn domain(self, user: u32) -> String {
+        let prefix = match self {
+            Self::Background => "user",
+            Self::Aqua => "gui",
+        };
+        format!("{prefix}/{user}")
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::Background => "Background",
+            Self::Aqua => "Aqua",
+        }
+    }
 }
 impl LaunchdRuntime {
     pub fn current_user() -> Result<Self> {
@@ -26,14 +47,14 @@ impl LaunchdRuntime {
         Ok(Self {
             agents: home.join("Library/LaunchAgents"),
             launchctl: "/bin/launchctl".into(),
-            domain: format!("gui/{}", unsafe { libc::getuid() }),
+            user: unsafe { libc::getuid() },
         })
     }
-    pub fn at_boundary(agents: PathBuf, launchctl: PathBuf, domain: String) -> Self {
+    pub fn at_boundary(agents: PathBuf, launchctl: PathBuf, user: u32) -> Self {
         Self {
             agents,
             launchctl,
-            domain,
+            user,
         }
     }
     fn command(&self, args: &[&std::ffi::OsStr]) -> Result<bool> {
@@ -49,12 +70,24 @@ impl LaunchdRuntime {
             Sha256::digest(directory.as_os_str().as_encoded_bytes())
         )
     }
-    fn location(&self, directory: &Path) -> (PathBuf, String) {
-        let label = Self::label(directory);
-        (
-            self.agents.join(format!("{label}.plist")),
-            format!("{}/{label}", self.domain),
-        )
+    fn location(&self, directory: &Path) -> PathBuf {
+        self.agents
+            .join(format!("{}.plist", Self::label(directory)))
+    }
+    fn target(&self, directory: &Path, session: Session) -> String {
+        format!("{}/{}", session.domain(self.user), Self::label(directory))
+    }
+    fn loaded_session(&self, directory: &Path) -> Result<Option<Session>> {
+        let mut loaded = None;
+        for session in [Session::Background, Session::Aqua] {
+            if self.command(&["print".as_ref(), self.target(directory, session).as_ref()])? {
+                if loaded.is_some() {
+                    return Err(Error::InsecureStorage);
+                }
+                loaded = Some(session);
+            }
+        }
+        Ok(loaded)
     }
     fn original(&self, path: &Path, directory: &Path) -> Result<Option<Vec<u8>>> {
         match fs::symlink_metadata(path) {
@@ -117,24 +150,29 @@ impl RuntimeSupervisor for LaunchdRuntime {
         if !executable.is_absolute() || !directory.is_absolute() {
             return Err(Error::InvalidRequest);
         }
-        if !self.command(&["print".as_ref(), self.domain.as_ref()])? {
+        let path = self.location(directory);
+        let original = self.original(&path, directory)?;
+        let loaded = self.loaded_session(directory)?;
+        if loaded.is_some() && original.is_none() {
+            return Err(Error::InsecureStorage);
+        }
+        // Keep an existing GUI registration controllable across upgrades. New
+        // registrations use the user domain and need no graphical login.
+        let session = loaded.unwrap_or(Session::Background);
+        let domain = session.domain(self.user);
+        let target = self.target(directory, session);
+        if !self.command(&["print".as_ref(), domain.as_ref()])? {
             return Err(Error::ExecutionUnavailable);
         }
         fs::create_dir_all(&self.agents).map_err(|_| Error::StorageUnavailable)?;
-        let (path, target) = self.location(directory);
-        let original = self.original(&path, directory)?;
-        let value = serde_json::json!({"Label":Self::label(directory),"ProgramArguments":[executable.to_str().ok_or(Error::InvalidRequest)?,"--data-dir",directory.to_str().ok_or(Error::InvalidRequest)?,"runtime","run"],"KeepAlive":true,"RunAtLoad":true,"ThrottleInterval":5,"ProcessType":"Background"});
+        let value = serde_json::json!({"Label":Self::label(directory),"ProgramArguments":[executable.to_str().ok_or(Error::InvalidRequest)?,"--data-dir",directory.to_str().ok_or(Error::InvalidRequest)?,"runtime","run"],"KeepAlive":true,"RunAtLoad":true,"ThrottleInterval":5,"ProcessType":"Background","LimitLoadToSessionType":session.name()});
         let mut bytes = vec![];
         plist::to_writer_xml(&mut bytes, &value).map_err(|_| Error::InvalidRequest)?;
-        let loaded = self.command(&["print".as_ref(), target.as_ref()])?;
-        if loaded && original.is_none() {
-            return Err(Error::InsecureStorage);
-        }
-        if original.as_ref() == Some(&bytes) && loaded {
+        if original.as_ref() == Some(&bytes) && loaded.is_some() {
             return Ok(());
         }
         self.write(&path, &bytes)?;
-        if loaded
+        if loaded.is_some()
             && !matches!(
                 self.command(&["bootout".as_ref(), target.as_ref()]),
                 Ok(true)
@@ -148,29 +186,34 @@ impl RuntimeSupervisor for LaunchdRuntime {
             return Err(Error::ExecutionUnavailable);
         }
         if matches!(
-            self.command(&["bootstrap".as_ref(), self.domain.as_ref(), path.as_os_str()]),
+            self.command(&["bootstrap".as_ref(), domain.as_ref(), path.as_os_str()]),
             Ok(true)
         ) {
             return Ok(());
         }
         if let Some(old) = original {
             self.write(&path, &old)?;
-            let _ = self.command(&["bootstrap".as_ref(), self.domain.as_ref(), path.as_os_str()]);
+            if loaded.is_some() {
+                let _ = self.command(&["bootstrap".as_ref(), domain.as_ref(), path.as_os_str()]);
+            }
         } else {
             let _ = fs::remove_file(path);
         }
         Err(Error::ExecutionUnavailable)
     }
     fn uninstall(&self, directory: &Path) -> Result<bool> {
-        let (path, target) = self.location(directory);
-        if self.original(&path, directory)?.is_none() {
-            if self.command(&["print".as_ref(), target.as_ref()])? {
+        let path = self.location(directory);
+        let original = self.original(&path, directory)?;
+        let loaded = self.loaded_session(directory)?;
+        if original.is_none() {
+            if loaded.is_some() {
                 return Err(Error::InsecureStorage);
             }
             return Ok(false);
         }
-        let loaded = self.command(&["print".as_ref(), target.as_ref()])?;
-        if loaded && !self.command(&["bootout".as_ref(), target.as_ref()])? {
+        if let Some(session) = loaded
+            && !self.command(&["bootout".as_ref(), self.target(directory, session).as_ref()])?
+        {
             return Err(Error::ExecutionUnavailable);
         }
         fs::remove_file(path).map_err(|_| Error::StorageUnavailable)?;

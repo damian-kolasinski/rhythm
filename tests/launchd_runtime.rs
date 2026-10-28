@@ -20,22 +20,36 @@ impl Fixture {
             r#"#!/bin/sh
 set -eu
 cd "$(dirname "$0")"
-printf '%s\n' "$1" >> calls
+printf '%s\n' "$*" >> calls
 case "$1" in
   print)
-    if [ "$2" != sample-domain ] && [ -f remove-on-probe ]; then rm "$0"; fi
-    [ "$2" = sample-domain ] || [ -f loaded ] ;;
-  bootout) rm loaded ;;
-  bootstrap) if [ -f fail-next ]; then rm fail-next; exit 1; fi; touch loaded ;;
+    case "$2" in
+      user/123)
+        if [ -f remove-on-probe ]; then rm "$0"; fi
+        [ ! -f no-user ] ;;
+      gui/123) [ ! -f no-gui ] ;;
+      user/123/*) [ ! -f no-user ] && [ -f loaded-user ] ;;
+      gui/123/*) [ ! -f no-gui ] && [ -f loaded-gui ] ;;
+      *) exit 1 ;;
+    esac ;;
+  bootout)
+    case "$2" in
+      user/123/*) rm loaded-user ;;
+      gui/123/*) rm loaded-gui ;;
+      *) exit 1 ;;
+    esac ;;
+  bootstrap)
+    if [ -f fail-next ]; then rm fail-next; exit 1; fi
+    case "$2" in
+      user/123) [ ! -f no-user ]; touch loaded-user ;;
+      gui/123) [ ! -f no-gui ]; touch loaded-gui ;;
+      *) exit 1 ;;
+    esac ;;
   *) exit 1 ;;
 esac
 "#,
         );
-        let adapter = LaunchdRuntime::at_boundary(
-            temp.path().join("agents"),
-            command,
-            "sample-domain".into(),
-        );
+        let adapter = LaunchdRuntime::at_boundary(temp.path().join("agents"), command, 123);
         Self {
             temp,
             root,
@@ -53,8 +67,22 @@ esac
         fs::read_to_string(self.temp.path().join("calls"))
             .unwrap()
             .lines()
-            .filter(|v| *v == operation)
+            .filter(|v| v.split_whitespace().next() == Some(operation))
             .count()
+    }
+    fn legacy_gui_registration(&self) {
+        fs::rename(
+            self.temp.path().join("loaded-user"),
+            self.temp.path().join("loaded-gui"),
+        )
+        .unwrap();
+        let registration = self.registration();
+        let mut value = plist::Value::from_file(&registration).unwrap();
+        value
+            .as_dictionary_mut()
+            .unwrap()
+            .remove("LimitLoadToSessionType");
+        value.to_file_xml(registration).unwrap();
     }
 }
 
@@ -75,6 +103,9 @@ fn owned_registration_is_private_idempotent_and_removable() {
     assert_eq!(args[0].as_string(), Some("/sample/bin/rhythm"));
     assert_eq!(args[2].as_string(), f.root.path().to_str());
     assert_eq!(d["KeepAlive"].as_boolean(), Some(true));
+    assert_eq!(d["LimitLoadToSessionType"].as_string(), Some("Background"));
+    assert!(f.temp.path().join("loaded-user").exists());
+    assert!(!f.temp.path().join("loaded-gui").exists());
     f.adapter
         .install(Path::new("/sample/bin/rhythm"), f.root.path())
         .unwrap();
@@ -101,7 +132,7 @@ fn failed_update_restores_previous_registration_and_supervision() {
         Err(Error::ExecutionUnavailable)
     ));
     assert_eq!(fs::read(registration).unwrap(), previous);
-    assert!(f.temp.path().join("loaded").exists());
+    assert!(f.temp.path().join("loaded-user").exists());
     assert_eq!(f.calls("bootstrap"), 3);
 }
 
@@ -156,7 +187,7 @@ fn launcher_unavailable_does_not_remove_registration_or_report_absence() {
         if !missing_registration {
             assert_eq!(fs::read(registration).unwrap(), original);
         }
-        assert!(f.temp.path().join("loaded").exists());
+        assert!(f.temp.path().join("loaded-user").exists());
     }
 }
 
@@ -175,5 +206,121 @@ fn unavailable_launcher_during_update_restores_previous_registration() {
         Err(Error::ExecutionUnavailable)
     ));
     assert_eq!(fs::read(registration).unwrap(), original);
-    assert!(f.temp.path().join("loaded").exists());
+    assert!(f.temp.path().join("loaded-user").exists());
+}
+
+#[test]
+fn headless_install_remains_in_the_user_domain_when_a_gui_session_appears() {
+    let f = Fixture::new();
+    fs::write(f.temp.path().join("no-gui"), "").unwrap();
+    f.adapter
+        .install(Path::new("/sample/bin/rhythm"), f.root.path())
+        .unwrap();
+    fs::remove_file(f.temp.path().join("no-gui")).unwrap();
+    f.adapter
+        .install(Path::new("/sample/bin/rhythm"), f.root.path())
+        .unwrap();
+    assert_eq!(f.calls("bootstrap"), 1);
+    assert!(f.adapter.uninstall(f.root.path()).unwrap());
+    assert!(!f.temp.path().join("loaded-user").exists());
+    assert!(!f.temp.path().join("loaded-gui").exists());
+}
+
+#[test]
+fn an_existing_gui_registration_is_updated_and_removed_in_its_original_domain() {
+    let f = Fixture::new();
+    f.adapter
+        .install(Path::new("/sample/bin/rhythm"), f.root.path())
+        .unwrap();
+    f.legacy_gui_registration();
+    f.adapter
+        .install(Path::new("/sample/new/rhythm"), f.root.path())
+        .unwrap();
+    let value = plist::Value::from_file(f.registration()).unwrap();
+    assert_eq!(
+        value.as_dictionary().unwrap()["LimitLoadToSessionType"].as_string(),
+        Some("Aqua")
+    );
+    assert!(!f.temp.path().join("loaded-user").exists());
+    assert!(f.temp.path().join("loaded-gui").exists());
+    assert!(f.adapter.uninstall(f.root.path()).unwrap());
+    assert!(!f.temp.path().join("loaded-gui").exists());
+}
+
+#[test]
+fn failed_gui_update_restores_the_original_registration_in_its_domain() {
+    let f = Fixture::new();
+    f.adapter
+        .install(Path::new("/sample/bin/rhythm"), f.root.path())
+        .unwrap();
+    f.legacy_gui_registration();
+    let previous = fs::read(f.registration()).unwrap();
+    fs::write(f.temp.path().join("fail-next"), "").unwrap();
+    assert!(matches!(
+        f.adapter
+            .install(Path::new("/sample/new/rhythm"), f.root.path()),
+        Err(Error::ExecutionUnavailable)
+    ));
+    assert_eq!(fs::read(f.registration()).unwrap(), previous);
+    assert!(f.temp.path().join("loaded-gui").exists());
+    assert!(!f.temp.path().join("loaded-user").exists());
+}
+
+#[test]
+fn failed_install_preserves_an_unloaded_registration_without_starting_it() {
+    let f = Fixture::new();
+    f.adapter
+        .install(Path::new("/sample/bin/rhythm"), f.root.path())
+        .unwrap();
+    fs::remove_file(f.temp.path().join("loaded-user")).unwrap();
+    let previous = fs::read(f.registration()).unwrap();
+    fs::write(f.temp.path().join("fail-next"), "").unwrap();
+    assert!(matches!(
+        f.adapter
+            .install(Path::new("/sample/new/rhythm"), f.root.path()),
+        Err(Error::ExecutionUnavailable)
+    ));
+    assert_eq!(fs::read(f.registration()).unwrap(), previous);
+    assert_eq!(f.calls("bootstrap"), 2);
+    assert!(!f.temp.path().join("loaded-user").exists());
+    assert!(!f.temp.path().join("loaded-gui").exists());
+}
+
+#[test]
+fn refuses_collisions_in_either_domain_and_ambiguous_duplicate_registrations() {
+    for owned_file in [false, true] {
+        let f = Fixture::new();
+        f.adapter
+            .install(Path::new("/sample/bin/rhythm"), f.root.path())
+            .unwrap();
+        fs::write(f.temp.path().join("loaded-gui"), "").unwrap();
+        let registration = f.registration();
+        if !owned_file {
+            fs::remove_file(&registration).unwrap();
+            fs::remove_file(f.temp.path().join("loaded-user")).unwrap();
+        }
+        for result in [
+            f.adapter
+                .install(Path::new("/sample/new/rhythm"), f.root.path()),
+            f.adapter.uninstall(f.root.path()).map(|_| ()),
+        ] {
+            assert!(matches!(result, Err(Error::InsecureStorage)));
+        }
+        assert_eq!(f.calls("bootout"), 0);
+        assert!(f.temp.path().join("loaded-gui").exists());
+        assert_eq!(registration.exists(), owned_file);
+    }
+}
+
+#[test]
+fn unavailable_user_domain_fails_without_installing_into_a_gui_session() {
+    let f = Fixture::new();
+    fs::write(f.temp.path().join("no-user"), "").unwrap();
+    assert!(matches!(
+        f.adapter
+            .install(Path::new("/sample/bin/rhythm"), f.root.path()),
+        Err(Error::ExecutionUnavailable)
+    ));
+    assert_eq!(f.calls("bootstrap"), 0);
+    assert!(!f.temp.path().join("agents").exists());
 }
