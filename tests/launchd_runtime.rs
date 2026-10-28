@@ -3,6 +3,8 @@ use rhythm::{launchd_runtime::LaunchdRuntime, private_storage::Root, services::*
 use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use tempfile::TempDir;
 
+mod command_fixture;
+
 struct Fixture {
     temp: TempDir,
     root: Root,
@@ -13,22 +15,22 @@ impl Fixture {
         let temp = TempDir::new().unwrap();
         let root = Root::open(temp.path().join("state")).unwrap();
         let command = temp.path().join("launchctl");
-        fs::write(
+        command_fixture::write(
             &command,
             r#"#!/bin/sh
 set -eu
 cd "$(dirname "$0")"
 printf '%s\n' "$1" >> calls
 case "$1" in
-  print) [ "$2" = sample-domain ] || [ -f loaded ] ;;
+  print)
+    if [ "$2" != sample-domain ] && [ -f remove-on-probe ]; then rm "$0"; fi
+    [ "$2" = sample-domain ] || [ -f loaded ] ;;
   bootout) rm loaded ;;
   bootstrap) if [ -f fail-next ]; then rm fail-next; exit 1; fi; touch loaded ;;
   *) exit 1 ;;
 esac
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&command, fs::Permissions::from_mode(0o700)).unwrap();
+        );
         let adapter = LaunchdRuntime::at_boundary(
             temp.path().join("agents"),
             command,
@@ -132,4 +134,46 @@ fn refuses_unowned_or_unreadable_registration_and_loaded_collision() {
         Err(Error::InsecureStorage)
     ));
     assert_eq!(f.calls("bootout"), 0);
+}
+
+#[test]
+fn launcher_unavailable_does_not_remove_registration_or_report_absence() {
+    for missing_registration in [false, true] {
+        let f = Fixture::new();
+        f.adapter
+            .install(Path::new("/sample/bin/rhythm"), f.root.path())
+            .unwrap();
+        let registration = f.registration();
+        let original = fs::read(&registration).unwrap();
+        if missing_registration {
+            fs::remove_file(&registration).unwrap();
+        }
+        fs::remove_file(f.temp.path().join("launchctl")).unwrap();
+        assert!(matches!(
+            f.adapter.uninstall(f.root.path()),
+            Err(Error::ExecutionUnavailable)
+        ));
+        if !missing_registration {
+            assert_eq!(fs::read(registration).unwrap(), original);
+        }
+        assert!(f.temp.path().join("loaded").exists());
+    }
+}
+
+#[test]
+fn unavailable_launcher_during_update_restores_previous_registration() {
+    let f = Fixture::new();
+    f.adapter
+        .install(Path::new("/sample/bin/rhythm"), f.root.path())
+        .unwrap();
+    let registration = f.registration();
+    let original = fs::read(&registration).unwrap();
+    fs::write(f.temp.path().join("remove-on-probe"), "").unwrap();
+    assert!(matches!(
+        f.adapter
+            .install(Path::new("/sample/new/rhythm"), f.root.path()),
+        Err(Error::ExecutionUnavailable)
+    ));
+    assert_eq!(fs::read(registration).unwrap(), original);
+    assert!(f.temp.path().join("loaded").exists());
 }

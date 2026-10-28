@@ -36,11 +36,12 @@ impl LaunchdRuntime {
             domain,
         }
     }
-    fn command(&self, args: &[&std::ffi::OsStr]) -> bool {
+    fn command(&self, args: &[&std::ffi::OsStr]) -> Result<bool> {
         Command::new(&self.launchctl)
             .args(args)
             .output()
-            .is_ok_and(|o| o.status.success())
+            .map(|o| o.status.success())
+            .map_err(|_| Error::ExecutionUnavailable)
     }
     fn label(directory: &Path) -> String {
         format!(
@@ -116,7 +117,7 @@ impl RuntimeSupervisor for LaunchdRuntime {
         if !executable.is_absolute() || !directory.is_absolute() {
             return Err(Error::InvalidRequest);
         }
-        if !self.command(&["print".as_ref(), self.domain.as_ref()]) {
+        if !self.command(&["print".as_ref(), self.domain.as_ref()])? {
             return Err(Error::ExecutionUnavailable);
         }
         fs::create_dir_all(&self.agents).map_err(|_| Error::StorageUnavailable)?;
@@ -125,7 +126,7 @@ impl RuntimeSupervisor for LaunchdRuntime {
         let value = serde_json::json!({"Label":Self::label(directory),"ProgramArguments":[executable.to_str().ok_or(Error::InvalidRequest)?,"--data-dir",directory.to_str().ok_or(Error::InvalidRequest)?,"runtime","run"],"KeepAlive":true,"RunAtLoad":true,"ThrottleInterval":5,"ProcessType":"Background"});
         let mut bytes = vec![];
         plist::to_writer_xml(&mut bytes, &value).map_err(|_| Error::InvalidRequest)?;
-        let loaded = self.command(&["print".as_ref(), target.as_ref()]);
+        let loaded = self.command(&["print".as_ref(), target.as_ref()])?;
         if loaded && original.is_none() {
             return Err(Error::InsecureStorage);
         }
@@ -133,7 +134,12 @@ impl RuntimeSupervisor for LaunchdRuntime {
             return Ok(());
         }
         self.write(&path, &bytes)?;
-        if loaded && !self.command(&["bootout".as_ref(), target.as_ref()]) {
+        if loaded
+            && !matches!(
+                self.command(&["bootout".as_ref(), target.as_ref()]),
+                Ok(true)
+            )
+        {
             if let Some(old) = original {
                 self.write(&path, &old)?;
             } else {
@@ -141,12 +147,15 @@ impl RuntimeSupervisor for LaunchdRuntime {
             }
             return Err(Error::ExecutionUnavailable);
         }
-        if self.command(&["bootstrap".as_ref(), self.domain.as_ref(), path.as_os_str()]) {
+        if matches!(
+            self.command(&["bootstrap".as_ref(), self.domain.as_ref(), path.as_os_str()]),
+            Ok(true)
+        ) {
             return Ok(());
         }
         if let Some(old) = original {
             self.write(&path, &old)?;
-            self.command(&["bootstrap".as_ref(), self.domain.as_ref(), path.as_os_str()]);
+            let _ = self.command(&["bootstrap".as_ref(), self.domain.as_ref(), path.as_os_str()]);
         } else {
             let _ = fs::remove_file(path);
         }
@@ -155,13 +164,13 @@ impl RuntimeSupervisor for LaunchdRuntime {
     fn uninstall(&self, directory: &Path) -> Result<bool> {
         let (path, target) = self.location(directory);
         if self.original(&path, directory)?.is_none() {
-            if self.command(&["print".as_ref(), target.as_ref()]) {
+            if self.command(&["print".as_ref(), target.as_ref()])? {
                 return Err(Error::InsecureStorage);
             }
             return Ok(false);
         }
-        let loaded = self.command(&["print".as_ref(), target.as_ref()]);
-        if loaded && !self.command(&["bootout".as_ref(), target.as_ref()]) {
+        let loaded = self.command(&["print".as_ref(), target.as_ref()])?;
+        if loaded && !self.command(&["bootout".as_ref(), target.as_ref()])? {
             return Err(Error::ExecutionUnavailable);
         }
         fs::remove_file(path).map_err(|_| Error::StorageUnavailable)?;
