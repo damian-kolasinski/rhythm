@@ -58,7 +58,7 @@ def verify(repository, release_version, commit, browser=False, supervised=False)
     project = "github.com/" + repository
     identity = f"https://github.com/{repository}/.github/workflows/release.yml@refs/tags/v{release_version}"
     with tempfile.TemporaryDirectory(prefix="rhythm-mise-") as directory:
-        root = Path(directory)
+        root = Path(directory).resolve(strict=True)
         assets = root / "assets"
         assets.mkdir()
         command(
