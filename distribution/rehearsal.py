@@ -2,7 +2,6 @@
 
 import argparse
 import json
-import os
 import shutil
 import subprocess
 import tempfile
@@ -20,7 +19,7 @@ def run(arguments, ok=True):
     return result
 
 
-def verify(archive, release_version, browser=False, supervised=False):
+def verify(archive, release_version, supervised=False):
     with tempfile.TemporaryDirectory(prefix="rhythm-package-") as directory:
         root = Path(directory)
         key = root / "release.key"
@@ -78,20 +77,11 @@ def verify(archive, release_version, browser=False, supervised=False):
         )
         binary = archive_contents.extract(archive, root / "installed")
         report = smoke.verify(binary, release_version, supervised)
-        if browser:
-            env = os.environ.copy()
-            env["RHYTHM_BIN"] = str(binary)
-            subprocess.run(
-                ["pnpm", "--dir", str(package.ROOT / "web"), "test"],
-                env=env,
-                check=True,
-            )
         return {
             **report,
             "test_key_signature": True,
             "tamper_rejected": True,
             "wrong_signer_rejected": True,
-            "browser": browser,
         }
 
 
@@ -99,7 +89,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path)
     parser.add_argument("--version", default=package.version())
-    parser.add_argument("--browser", action="store_true")
     parser.add_argument("--launchd", action="store_true")
     args = parser.parse_args()
     print(
@@ -109,7 +98,6 @@ if __name__ == "__main__":
                     strict=True
                 ),
                 args.version,
-                args.browser,
                 args.launchd,
             )
         )

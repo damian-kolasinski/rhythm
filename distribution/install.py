@@ -49,7 +49,7 @@ def validate_statement(statement, project, release_version, commit):
         raise RuntimeError("published release source identity mismatch")
 
 
-def verify(repository, release_version, commit, browser=False, supervised=False):
+def verify(repository, release_version, commit, supervised=False):
     if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repository) or not re.fullmatch(
         r"[0-9a-f]{40}", commit
     ):
@@ -129,19 +129,10 @@ def verify(repository, release_version, commit, browser=False, supervised=False)
         ):
             raise RuntimeError("installed bytes differ from verified archive")
         report = smoke.verify(binary, release_version, supervised)
-        if browser:
-            test_env = os.environ.copy()
-            test_env["RHYTHM_BIN"] = str(binary)
-            subprocess.run(
-                ["pnpm", "--dir", str(package.ROOT / "web"), "test"],
-                env=test_env,
-                check=True,
-            )
         return {
             **report,
             "signature_verified": True,
             "mise_install": True,
-            "browser": browser,
             "archive_sha256": hashlib.sha256(archive.read_bytes()).hexdigest(),
         }
 
@@ -151,9 +142,6 @@ if __name__ == "__main__":
     parser.add_argument("--repository", required=True)
     parser.add_argument("--version", required=True)
     parser.add_argument("--commit", required=True)
-    parser.add_argument("--browser", action="store_true")
     parser.add_argument("--launchd", action="store_true")
     args = parser.parse_args()
-    print(
-        json.dumps(verify(args.repository, args.version, args.commit, args.browser, args.launchd))
-    )
+    print(json.dumps(verify(args.repository, args.version, args.commit, args.launchd)))

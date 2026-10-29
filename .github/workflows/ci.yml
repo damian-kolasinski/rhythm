@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  runtime:
+  check:
     strategy:
       matrix:
         os: [macos-15, ubuntu-24.04]
@@ -29,5 +29,4 @@ jobs:
           version: 2026.10.11
           cache: false
       - run: mise run check
-      - run: git diff --exit-code -- web/dist
       - run: cargo test --locked

@@ -1,0 +1,18 @@
+local
+  JOB                 SCHEDULE                  STATE    LAST
+  com.example.sync    every 5m, on queued file  running  pid 4242
+  com.example.report  daily 18:30               ok       exit 0
+
+2 jobs, none need attention
+
+devbox
+  JOB               SCHEDULE     STATE    LAST
+! com.example.scan  daily 08:07  failing  exit 1
+
+1 job, 1 needs attention
+
+laptop
+The host did not answer over ssh.
+
+build
+Rhythm on the host is missing or incompatible with this version.

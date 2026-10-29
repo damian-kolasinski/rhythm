@@ -12,7 +12,6 @@ on:
       - Cargo.toml
       - Cargo.lock
       - src/**
-      - web/**
 
 concurrency:
   group: release-${{ github.ref }}
@@ -58,11 +57,9 @@ jobs:
           version: 2026.10.11
           cache: false
       - run: mise run check
-      - run: git diff --exit-code -- web/dist
       - run: cargo test --locked
       - run: mise run dist:build
-      - run: pnpm --dir web exec playwright install chromium
-      - name: Verify the packaged candidate and installed browser flows
+      - name: Verify the packaged candidate's installed flows
         run: mise run dist:rehearse
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -138,10 +135,8 @@ jobs:
         with:
           version: 2026.10.11
           cache: false
-      - run: mise run web:install
-      - run: pnpm --dir web exec playwright install chromium
       - name: Install the published signature-verified release through mise and test it
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
-        run: python distribution/install.py --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" --commit "$GITHUB_SHA" --browser
+        run: python distribution/install.py --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" --commit "$GITHUB_SHA"

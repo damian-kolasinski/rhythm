@@ -1,0 +1,7 @@
+  JOB                 SCHEDULE                  STATE    LAST
+[31m![0m com.example.broken  -                         [31minvalid[0m  unreadable definition
+[31m![0m com.example.scan    daily 08:07               [31mfailing[0m  exit 1
+[31m![0m com.example.server  keep-alive                [31mfailing[0m  signal 9
+  com.example.sync    every 5m, on queued file  [32mrunning[0m  pid 4242
+
+4 jobs, [31m3 need attention[0m

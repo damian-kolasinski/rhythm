@@ -25,7 +25,7 @@ class Packaging(unittest.TestCase):
             with tarfile.open(first) as archive:
                 self.assertEqual(
                     archive.getnames(),
-                    ["rhythm", "licenses/DM-Sans-OFL.txt", "README.txt"],
+                    ["rhythm", "README.txt"],
                 )
                 for member in archive:
                     self.assertTrue(member.isfile())

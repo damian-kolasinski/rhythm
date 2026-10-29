@@ -2,7 +2,7 @@
 
 import tarfile
 
-NAMES = {"rhythm", "licenses/DM-Sans-OFL.txt", "README.txt"}
+NAMES = {"rhythm", "README.txt"}
 
 
 def read(archive):
