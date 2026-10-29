@@ -1,36 +1,34 @@
 # Rhythm
 
-Rhythm is a small, agent-first scheduler for recurring commands on one machine.
-A schedule remains discoverable across sessions, explains its next run and last
-outcome, and provides retained execution history and output.
+Agents leave background work behind: launchd agents written by hand, each with
+its own label, log location, and PATH workaround. launchd runs them reliably but
+remembers only the last exit code, keeps no per-run output, and tells nobody
+when a job starts failing. Rhythm makes that work visible without replacing it.
 
-## Product surfaces
+## Principles
 
-- **CLI:** create and inspect schedules, enable/pause triggers, run immediately,
-  cancel active/queued work, and investigate uncertain execution. Commands are
-  noninteractive with structured output and predictable errors.
-- **Local web UI:** one searchable schedule list, attention states, upcoming
-  timing, execution history, logs, and basic controls. Configuration stays in
-  CLI definitions.
-- **Local runtime:** durable interval/daily/weekly triggers, explicit overlap and
-  missed-run policies, contained execution, and recovery shared by both clients.
+- **launchd runs jobs; Rhythm observes and records them.** No second scheduler,
+  no Rhythm daemon. Existing jobs keep working unchanged until the operator
+  chooses to record them.
+- **One inventory.** `rhythm status` lists every user agent on this machine or
+  others over ssh, with jobs needing attention first.
+- **Agent-first.** Noninteractive commands, structured JSON, predictable errors,
+  and fixed messages that never echo private values.
+- **Failures reach someone.** Rhythm should tell the operator and the next agent
+  session when background work breaks, instead of waiting to be asked.
 
-Scope is finite scheduled execution on one machine. General process supervision,
-external workload discovery, standalone job management, fleet control, native
-clients, and secret/environment configuration are outside the product scope.
-The runtime itself uses launchd supervision on macOS.
+## Scope
+
+User LaunchAgents on macOS, one user per machine, and other machines reached by
+the operator's own ssh configuration. System daemons, fleet management,
+non-launchd supervisors, and secret management are out of scope until needed.
 
 ## Architecture
 
-Use hexagonal architecture: schedule policy owns its business rules; process,
-clock, storage, platform supervision, and transport adapters serve those rules.
-Keep execution ownership schedule-specific and validate untrusted input at the
-CLI, HTTP, and storage boundaries.
-
-Rust, Tokio, and Axum provide the CLI/runtime, SQLite stores definitions and
-execution records, and Solid/TypeScript/Vite provide the embedded UI. Private
-files retain bounded output. Execution state describes process evidence;
-application or downstream health requires evidence from the command itself.
+Hexagonal: the job model and its health rules own the business logic. The
+launchd adapter reads definitions and `launchctl` observations; the ssh adapter
+reads another machine's report through the same JSON contract. Rust with no
+async runtime keeps the binary small and fast to start.
 
 Use synthetic fixtures and generic examples in repository and review artifacts.
 Machine inventory, real definitions, environment details, and logs stay private.

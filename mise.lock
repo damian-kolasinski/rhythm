@@ -36,34 +36,6 @@ url = "https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_
 url_api = "https://api.github.com/repos/rhysd/actionlint/releases/assets/384924893"
 provenance = "github-attestations"
 
-[[tools.node]]
-version = "22.19.0"
-backend = "core:node"
-specifiers = ["22.19.0"]
-
-[tools.node."platforms.linux-x64"]
-checksum = "sha256:d36e56998220085782c0ca965f9d51b7726335aed2f5fc7321c6c0ad233aa96d"
-url = "https://nodejs.org/dist/v22.19.0/node-v22.19.0-linux-x64.tar.gz"
-
-[tools.node."platforms.macos-arm64"]
-checksum = "sha256:c59006db713c770d6ec63ae16cb3edc11f49ee093b5c415d667bb4f436c6526d"
-url = "https://nodejs.org/dist/v22.19.0/node-v22.19.0-darwin-arm64.tar.gz"
-
-[[tools.pnpm]]
-version = "10.12.4"
-backend = "aqua:pnpm/pnpm"
-specifiers = ["10.12.4"]
-
-[tools.pnpm."platforms.linux-x64"]
-checksum = "sha256:ac2768434cbc6c5fec71da4abae7845802bbfe326d590aa0004cdf8bf0815b26"
-url = "https://github.com/pnpm/pnpm/releases/download/v10.12.4/pnpm-linux-x64"
-url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/267574601"
-
-[tools.pnpm."platforms.macos-arm64"]
-checksum = "sha256:c19eaae80eda5ece50952d64a163b2673c03fbb9e81d50d0a571387d8344cdba"
-url = "https://github.com/pnpm/pnpm/releases/download/v10.12.4/pnpm-macos-arm64"
-url_api = "https://api.github.com/repos/pnpm/pnpm/releases/assets/267574603"
-
 [[tools.python]]
 version = "3.14.3"
 backend = "core:python"

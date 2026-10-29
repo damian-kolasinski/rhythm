@@ -1,32 +1,9 @@
-//! Schedule application services and their platform, storage, and transport adapters.
-mod database;
-mod definition_file;
-pub mod execution;
-pub mod execution_command;
-pub mod execution_host;
-mod execution_reader;
-pub mod execution_records;
-mod execution_storage;
-pub mod launchd_runtime;
-pub mod local_access;
-pub mod local_api;
+//! Find, record, and surface the background jobs agents leave on a machine.
+//! launchd runs the jobs; Rhythm observes them.
+pub mod bounded_command;
+pub mod jobs;
+pub mod launchd;
 pub mod operation_error;
-pub mod private_storage;
-pub mod runtime;
-pub mod runtime_cli;
-pub mod runtime_protocol;
-pub mod runtime_supervision;
-pub mod schedule_cli;
-pub mod schedule_store;
-pub mod schedules;
-pub mod state_directory;
-pub mod workload_id;
-
-mod browser_api;
-pub mod browser_launch;
-pub mod demo;
-mod http_authorization;
-mod http_response;
-mod runtime_mailbox;
-mod web_assets;
-mod web_security;
+pub mod remote;
+pub mod status;
+pub mod status_render;

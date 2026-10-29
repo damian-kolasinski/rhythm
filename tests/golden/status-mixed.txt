@@ -1,0 +1,10 @@
+  JOB                 SCHEDULE                  STATE     LAST
+! com.example.broken  -                         invalid   unreadable definition
+! com.example.scan    daily 08:07               failing   exit 1
+! com.example.server  keep-alive                failing   signal 9
+  com.example.sync    every 5m, on queued file  running   pid 4242
+  com.example.report  daily 18:30               ok        exit 0
+  com.example.helper  on demand                 idle      never exited
+  com.example.off     daily 06:00               unloaded  not loaded
+
+7 jobs, 3 need attention

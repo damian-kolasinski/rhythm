@@ -3,23 +3,17 @@ name = "rhythm"
 version = "0.1.1"
 edition = "2024"
 rust-version = "1.99"
-description = "Run and inspect persistent schedules on one machine"
+description = "Find, record, and surface the background jobs agents leave on a machine"
 
 [dependencies]
-axum = "0.8.9"
-chrono = { version = "0.4", default-features = false, features = ["std"] }
-chrono-tz = "0.10"
 clap = { version = "4.6.7", features = ["derive"] }
-getrandom = "0.4.3"
 libc = "0.2.191"
 plist = "1.10.3"
-reqwest = { version = "0.12.28", default-features = false, features = ["json"] }
-rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
-sha2 = "0.10.9"
-tokio = { version = "1.53.2", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "process", "io-util", "io-std"] }
 
+[dev-dependencies]
+getrandom = "0.4.3"
 tempfile = "3.27.0"
 
 [lints.clippy]

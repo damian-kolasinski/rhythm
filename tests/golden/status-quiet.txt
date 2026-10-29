@@ -1,0 +1,6 @@
+No launchd jobs in LaunchAgents.
+---
+  JOB                 SCHEDULE     STATE  LAST
+  com.example.report  daily 09:00  ok     exit 0
+
+1 job, none need attention

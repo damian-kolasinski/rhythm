@@ -1,39 +1,36 @@
-"""Exercise an installed executable through its CLI, persisted state and embedded HTTP UI."""
+"""Exercise an installed executable through its CLI against disposable launchd definitions."""
 
 import argparse
 import json
 import os
-import plistlib
+import secrets
 import subprocess
 import tempfile
-import time
-import urllib.request
 from pathlib import Path
 
 
-def cli(binary, root, *arguments):
+def cli(binary, home, *arguments, ok=True):
     result = subprocess.run(
-        [str(binary), "--json", "--data-dir", str(root), *arguments],
+        [str(binary), "--json", *arguments],
         capture_output=True,
         text=True,
-        timeout=15,
+        timeout=30,
+        env={**os.environ, "HOME": str(home)},
     )
-    if result.returncode:
-        raise RuntimeError("installed CLI request failed")
-    return json.loads(result.stdout)
+    if (result.returncode == 0) != ok:
+        raise RuntimeError("installed CLI request did not match the expected outcome")
+    return json.loads(result.stdout if ok else result.stderr)
 
 
-def wait_for(read, accept, timeout=10):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        try:
-            value = read()
-            if accept(value):
-                return value
-        except (OSError, RuntimeError, json.JSONDecodeError):
-            pass
-        time.sleep(0.05)
-    raise RuntimeError("installed runtime did not reach expected state")
+def definition(label, body):
+    return (
+        '<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict>'
+        f"<key>Label</key><string>{label}</string>{body}</dict></plist>"
+    )
+
+
+def launchctl(*arguments):
+    return subprocess.run(["/bin/launchctl", *arguments], capture_output=True).returncode == 0
 
 
 def verify(binary, release_version, supervised=False):
@@ -44,138 +41,67 @@ def verify(binary, release_version, supervised=False):
     ):
         raise RuntimeError("installed executable version mismatch")
     with tempfile.TemporaryDirectory(prefix="rhythm-distributed-") as directory:
-        root = (Path(directory) / "state").resolve()
-        process = None
-
-        def start():
-            nonlocal process
-            if supervised:
-                cli(binary, root, "runtime", "install")
-            else:
-                process = subprocess.Popen(
-                    [str(binary), "--data-dir", str(root), "runtime", "run"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                )
-            wait_for(
-                lambda: cli(binary, root, "runtime", "status"),
-                lambda value: value["type"] == "runtime",
+        home = Path(directory).resolve()
+        agents = home / "Library/LaunchAgents"
+        agents.mkdir(parents=True)
+        suffix = secrets.token_hex(6)
+        unloaded = f"dev.rhythm.smoke.unloaded.{suffix}"
+        (agents / f"{unloaded}.plist").write_text(
+            definition(
+                unloaded,
+                "<key>Program</key><string>/usr/bin/true</string>"
+                "<key>StartCalendarInterval</key><dict><key>Hour</key><integer>9</integer>"
+                "<key>Minute</key><integer>15</integer></dict>",
             )
-
-        def stop():
-            nonlocal process
-            cli(binary, root, "runtime", "stop")
-            if process is not None:
-                process.wait(timeout=8)
-                process = None
-
-        try:
-            start()
-            if supervised:
-                import hashlib
-
-                label = "dev.rhythm.runtime." + hashlib.sha256(os.fsencode(root)).hexdigest()
-                registration = Path.home() / "Library/LaunchAgents" / (label + ".plist")
-                with registration.open("rb") as file:
-                    definition = plistlib.load(file)
-                if definition["ProgramArguments"][0] != str(binary):
-                    raise RuntimeError("registration does not use installed executable")
-            schedules = [
-                {
-                    "id": "sample-distributed-report",
-                    "command": ["/bin/sh", "-c", "printf distributed-report"],
-                    "working_directory": "/tmp",
-                    "trigger": {"type": "interval", "every_ms": 1000},
-                    "overlap": "skip",
-                    "missed": "skip",
-                },
-                {
-                    "id": "sample-distributed-cleanup",
-                    "command": ["/bin/sh", "-c", "printf distributed-cleanup"],
-                    "working_directory": "/tmp",
-                    "trigger": {"type": "interval", "every_ms": 1000},
-                    "overlap": "skip",
-                    "missed": "skip",
-                },
-            ]
-            ids = []
-            for definition, expected in zip(
-                schedules, ["distributed-report", "distributed-cleanup"], strict=True
-            ):
-                file = Path(directory) / (definition["id"] + ".json")
-                file.write_text(json.dumps(definition))
-                file.chmod(0o600)
-                cli(binary, root, "schedule", "create", "--file", str(file))
-                cli(binary, root, "schedule", "run-now", definition["id"])
-                history = wait_for(
-                    lambda schedule_id=definition["id"]: cli(
-                        binary, root, "schedule", "history", schedule_id
-                    ),
-                    lambda value: (
-                        bool(value["executions"])
-                        and value["executions"][0]["outcome"] == {"type": "exited", "code": 0}
-                    ),
+        )
+        (agents / "broken.plist").write_text("{not a plist")
+        jobs = {job["label"]: job for job in cli(binary, home, "status")["hosts"][0]["jobs"]}
+        if (
+            jobs[unloaded]["health"] != "unloaded"
+            or jobs[unloaded]["activation"]["triggers"][0]["hour"] != 9
+            or jobs["broken"]["health"] != "invalid"
+        ):
+            raise RuntimeError("installed status did not read definitions")
+        if (
+            cli(binary, home, "status", "--host", "-oProxyCommand=x", ok=False)["error"]["code"]
+            != "invalid_request"
+        ):
+            raise RuntimeError("installed status accepted an ssh option as a host")
+        if supervised:
+            user = os.getuid()
+            domain = f"gui/{user}" if launchctl("print", f"gui/{user}") else f"user/{user}"
+            session = "Aqua" if domain.startswith("gui") else "Background"
+            failing = f"dev.rhythm.smoke.failing.{suffix}"
+            plist = agents / f"{failing}.plist"
+            plist.write_text(
+                definition(
+                    failing,
+                    "<key>ProgramArguments</key><array><string>/bin/sh</string>"
+                    "<string>-c</string><string>exit 3</string></array>"
+                    f"<key>RunAtLoad</key><true/><key>LimitLoadToSessionType</key>"
+                    f"<string>{session}</string>",
                 )
-                execution = history["executions"][0]
-                if (
-                    execution["schedule_id"] != definition["id"]
-                    or execution["invocation"]["source"] != "manual"
-                ):
-                    raise RuntimeError("schedule execution ownership mismatch")
-                ids.append(execution["id"])
-                if (
-                    cli(binary, root, "schedule", "logs", str(execution["id"]))["stdout"]
-                    != expected
-                ):
-                    raise RuntimeError("distributed output mismatch")
-            if ids[0] == ids[1]:
-                raise RuntimeError("schedule execution IDs are not shared")
-            stop()
-            start()
-            for definition, execution in zip(schedules, ids, strict=True):
-                if (
-                    cli(binary, root, "schedule", "history", definition["id"])["executions"][0][
-                        "id"
-                    ]
-                    != execution
-                ):
-                    raise RuntimeError("schedule history did not persist")
-            schedule = schedules[0]
-            launch = cli(binary, root, "ui", "--no-open")
-            opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-            for path, expected in [
-                ("/", b"<html"),
-                ("/assets/app.js", b""),
-                ("/assets/app.css", b"DM Sans"),
-                ("/assets/dm-sans.woff2", b"wOF2"),
-            ]:
-                with opener.open(launch["url"].rstrip("/") + path, timeout=5) as response:
-                    body = response.read()
-                    if (
-                        response.status != 200
-                        or expected not in body
-                        or response.headers["Cache-Control"] != "no-store"
-                    ):
-                        raise RuntimeError("embedded distributed asset unavailable")
-            cli(binary, root, "schedule", "resume", schedule["id"])
-            wait_for(
-                lambda: cli(binary, root, "schedule", "history", schedule["id"]),
-                lambda value: len(value["executions"]) >= 2,
             )
-            cli(binary, root, "schedule", "pause", schedule["id"])
-        finally:
+            if not launchctl("bootstrap", domain, str(plist)):
+                raise RuntimeError("disposable agent could not be registered")
             try:
-                stop()
+                for _ in range(100):
+                    job = next(
+                        j
+                        for j in cli(binary, home, "status")["hosts"][0]["jobs"]
+                        if j["label"] == failing
+                    )
+                    if job["health"] == "failing":
+                        break
+                    subprocess.run(["/bin/sleep", "0.05"], check=True)
+                if job["observation"].get("last_exit") != {"type": "code", "code": 3}:
+                    raise RuntimeError("installed status did not observe a launchd failure")
             finally:
-                if process is not None:
-                    process.kill()
-                    process.wait()
+                launchctl("bootout", f"{domain}/{failing}")
     return {
         "version": release_version,
         "cli": True,
-        "schedules": True,
-        "persistence": True,
-        "embedded_ui": True,
+        "status": True,
         "supervision": supervised,
     }
 

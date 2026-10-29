@@ -78,12 +78,8 @@ def archive(binary, output, release_version, target=TARGET):
     output.mkdir(parents=True, exist_ok=True)
     members = {
         "rhythm": (executable, 0o755),
-        "licenses/DM-Sans-OFL.txt": (
-            (ROOT / "web/DM-Sans-OFL.txt").read_bytes(),
-            0o644,
-        ),
         "README.txt": (
-            b"Rhythm\n\nRun rhythm --help or rhythm demo.\nThe local workspace trusts loopback callers.\nInstall versioned, signed releases with mise's packslip backend.\n",
+            b"Rhythm\n\nRun rhythm --help or rhythm status.\nInstall versioned, signed releases with mise's packslip backend.\n",
             0o644,
         ),
     }
