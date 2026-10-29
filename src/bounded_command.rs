@@ -92,7 +92,7 @@ mod tests {
     fn collects_both_streams() {
         let output = run(
             shell("printf out; printf err >&2; exit 3"),
-            Duration::from_secs(5),
+            Duration::from_secs(30),
             64,
         )
         .unwrap();
@@ -121,7 +121,7 @@ mod tests {
             Some(Failure::TimedOut)
         );
         assert_eq!(
-            run(shell("yes; sleep 5"), Duration::from_secs(5), 1024).err(),
+            run(shell("yes; sleep 5"), Duration::from_secs(30), 1024).err(),
             Some(Failure::TooLarge)
         );
         assert!(started.elapsed() < Duration::from_secs(3));

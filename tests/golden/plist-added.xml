@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>dev.rhythm.report</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/tools/rhythm</string>
+		<string>run</string>
+		<string>dev.rhythm.report</string>
+		<string>--</string>
+		<string>/bin/sh</string>
+		<string>-c</string>
+		<string>echo sample</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>$TMP/home</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>$TMP/home/.local/bin:$TMP/home/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>SAMPLE_MODE</key>
+		<string>fast</string>
+	</dict>
+	<key>StandardOutPath</key>
+	<string>/private/state/recorder.log</string>
+	<key>StandardErrorPath</key>
+	<string>/private/state/recorder.log</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>7200</integer>
+	<key>StartCalendarInterval</key>
+	<array>
+		<dict>
+			<key>Minute</key>
+			<integer>7</integer>
+			<key>Hour</key>
+			<integer>8</integer>
+		</dict>
+		<dict>
+			<key>Minute</key>
+			<integer>0</integer>
+			<key>Hour</key>
+			<integer>9</integer>
+			<key>Weekday</key>
+			<integer>6</integer>
+		</dict>
+	</array>
+</dict>
+</plist>

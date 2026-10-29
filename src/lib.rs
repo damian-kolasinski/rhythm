@@ -1,17 +1,22 @@
 //! Find, record, and surface the background jobs agents leave on a machine.
 //! launchd runs the jobs; Rhythm observes them.
+pub mod authoring;
 pub mod bounded_command;
 pub mod history_render;
 pub mod jobs;
+pub mod kick;
+pub mod kick_render;
 pub mod launchd;
 pub mod ledger;
 pub mod operation_error;
 pub mod private_storage;
 pub mod recorder;
+pub mod recorder_link;
 pub mod remote;
 pub mod run_history;
 pub mod run_output;
 pub mod runs;
+pub mod schedule_input;
 pub mod state_directory;
 pub mod status;
 pub mod status_render;

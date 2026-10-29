@@ -1,6 +1,15 @@
 //! Read the job-level fields of `launchctl print` output.
 use crate::jobs::{Exit, Observation};
 
+/// The definition file launchd loaded the job from.
+pub fn path(output: &str) -> Option<std::path::PathBuf> {
+    output
+        .lines()
+        .filter_map(|l| l.strip_prefix('\t').filter(|l| !l.starts_with('\t')))
+        .find_map(|l| l.strip_prefix("path = "))
+        .map(Into::into)
+}
+
 pub fn parse(output: &str) -> Observation {
     let (mut pid, mut runs, mut last_exit, mut reason) = (None, 0, None, None);
     // Only top-level fields: nested blocks repeat names such as `state`.
@@ -72,6 +81,16 @@ mod tests {
                 last_exit: None
             }
         );
+    }
+
+    #[test]
+    fn reads_the_loaded_definition_path() {
+        let output = "\tpath = /Users/sample/Library/LaunchAgents/com.example.job.plist\n\t\tpath = /nested\n";
+        assert_eq!(
+            path(output),
+            Some("/Users/sample/Library/LaunchAgents/com.example.job.plist".into())
+        );
+        assert_eq!(path("\tstate = running\n"), None);
     }
 
     #[test]

@@ -19,7 +19,7 @@ def cli(binary, home, *arguments, ok=True):
     )
     if (result.returncode == 0) != ok:
         raise RuntimeError("installed CLI request did not match the expected outcome")
-    return json.loads(result.stdout if ok else result.stderr)
+    return json.loads(result.stdout or result.stderr)
 
 
 def definition(label, body):
@@ -124,11 +124,45 @@ def verify(binary, release_version, supervised=False):
                     raise RuntimeError("installed status did not observe a launchd failure")
             finally:
                 launchctl("bootout", f"{domain}/{failing}")
+            name = f"smoke-{suffix}"
+            cli(
+                binary,
+                home,
+                "--data-dir",
+                str(state),
+                "add",
+                name,
+                "--",
+                "/bin/sh",
+                "-c",
+                "echo distributed-add; exit 6",
+            )
+            try:
+                kicked = cli(
+                    binary,
+                    home,
+                    "--data-dir",
+                    str(state),
+                    "kick",
+                    name,
+                    "--wait",
+                    "--timeout",
+                    "30",
+                    ok=False,
+                )
+            finally:
+                cli(binary, home, "--data-dir", str(state), "remove", name)
+            if (
+                kicked.get("finished", {}).get("exit") != {"type": "code", "code": 6}
+                or kicked["finished"].get("output") != "distributed-add\n"
+            ):
+                raise RuntimeError("installed add and kick did not record a real launchd run")
     return {
         "version": release_version,
         "cli": True,
         "status": True,
         "recording": True,
+        "authoring": supervised,
         "supervision": supervised,
     }
 

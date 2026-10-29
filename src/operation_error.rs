@@ -4,6 +4,17 @@ use serde::{Deserialize, Serialize};
 pub enum Error {
     InvalidRequest,
     NotFound,
+    JobNotFound,
+    JobNotLoaded,
+    AlreadyExists,
+    Busy,
+    RestartRequired,
+    NotRecorded,
+    NotOwned,
+    UnsupportedDefinition,
+    TimedOut,
+    Refused,
+    RollbackIncomplete,
     StorageUnavailable,
     InsecureStorage,
     UnsupportedSchema,
@@ -19,6 +30,21 @@ impl Error {
         match self {
             Self::InvalidRequest => "Invalid command. Run rhythm --help.",
             Self::NotFound => "No recorded run matches.",
+            Self::JobNotFound => "No launchd job has this label.",
+            Self::JobNotLoaded => "The job is not loaded into launchd.",
+            Self::AlreadyExists => "A job with this label already exists.",
+            Self::Busy => "The job is running now.",
+            Self::RestartRequired => "The job is running. Pass --restart to stop and reload it.",
+            Self::NotRecorded => "The job does not record its runs.",
+            Self::NotOwned => "Rhythm only removes jobs it created with `rhythm add`.",
+            Self::UnsupportedDefinition => {
+                "The job's definition uses a form Rhythm cannot change safely."
+            }
+            Self::Refused => "launchd refused the job's definition; nothing was changed.",
+            Self::RollbackIncomplete => {
+                "launchd refused the change, and the previous job could not be fully restored. Check it with `rhythm status`."
+            }
+            Self::TimedOut => "The run did not finish in time; it continues in the background.",
             Self::StorageUnavailable => "Rhythm's private storage is unavailable.",
             Self::InsecureStorage => "Rhythm's private storage is accessible to other users.",
             Self::UnsupportedSchema => {

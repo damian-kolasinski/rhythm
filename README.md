@@ -8,14 +8,17 @@ for you and your agents.
 ```sh
 rhythm status                    # every user launchd job, attention first
 rhythm status --host devbox      # another machine over ssh
-rhythm history com.example.scan  # recorded runs, newest first
-rhythm logs com.example.scan     # output of the newest run
+rhythm add report --daily 08:07 -- /path/to/report   # dev.rhythm.report
+rhythm kick report --wait        # run now and see how it ended
+rhythm adopt com.example.scan    # record an existing job's runs
+rhythm history report            # recorded runs, newest first
+rhythm logs report               # output of the newest run
 rhythm --json status             # structured output for agents
 ```
 
 See [VISION.md](VISION.md) for scope, [status](docs/status.md) for states and
 the JSON contract, [recorded runs](docs/runs.md) for history, output, and
-retention, and [distribution](docs/distribution.md) for signed
+retention, [creating and adopting jobs](docs/authoring.md), and [distribution](docs/distribution.md) for signed
 installation. Real job definitions and output belong in private storage, outside
 this repository.
 
