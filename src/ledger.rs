@@ -156,6 +156,37 @@ impl Ledger {
         self.root.path().join("runs").join(id.to_string())
     }
 
+    /// The job's last run before `id` that says whether the job worked: lost
+    /// and stopped runs do not.
+    pub fn previous_finished(&self, label: &str, id: i64) -> Result<Option<Run>> {
+        self.connection
+            .query_row(
+                "SELECT id, label, started_at, recorder_pid, ended_at, outcome FROM runs
+                 WHERE label = ?1 AND id < ?2 AND ended_at IS NOT NULL
+                   AND outcome NOT LIKE ?3
+                 ORDER BY id DESC LIMIT 1",
+                params![label, id, r#"{"type":"stopped"%"#],
+                |r| run(r, &self.root),
+            )
+            .optional()
+            .map_err(|_| Error::StorageUnavailable)
+    }
+    /// Runs of the job after `id` that failed or were lost, oldest first.
+    pub fn failures_after(&self, label: &str, id: i64) -> Result<Vec<Run>> {
+        let mut runs: Vec<Run> = self
+            .connection
+            .prepare(
+                "SELECT id, label, started_at, recorder_pid, ended_at, outcome FROM runs
+                 WHERE label = ?1 AND id > ?2 ORDER BY id",
+            )
+            .and_then(|mut s| {
+                s.query_map(params![label, id], |r| run(r, &self.root))?
+                    .collect()
+            })
+            .map_err(|_| Error::StorageUnavailable)?;
+        runs.retain(|r| r.state.failed());
+        Ok(runs)
+    }
     pub fn latest(&self, label: &str) -> Result<Option<Run>> {
         Ok(self.history(label, 1)?.pop())
     }

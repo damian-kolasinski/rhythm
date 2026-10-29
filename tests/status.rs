@@ -4,7 +4,8 @@ use rhythm::{
     launchd::Launchd,
     operation_error::Error,
     remote::Ssh,
-    status::{self, HostOutcome, JobReport, Target},
+    status::{self, HostOutcome, JobReport},
+    targets::Target,
 };
 use std::{fs, path::Path, time::Duration};
 use tempfile::TempDir;

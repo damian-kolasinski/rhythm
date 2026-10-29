@@ -14,7 +14,7 @@ From this repository, with mise installed and GitHub access configured:
 repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 mise use -g "packslip:github.com/$repository@0.1.1"
 rhythm --version
-rhythm status
+rhythm demo
 ```
 
 Or replace `OWNER/REPOSITORY` in `mise use -g

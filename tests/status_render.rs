@@ -26,6 +26,7 @@ fn job(label: &str, activation: Option<Activation>, observation: Observation) ->
         observation,
         recorded: false,
         last_run: None,
+        run_store: None,
     }
 }
 

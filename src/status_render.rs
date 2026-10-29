@@ -2,7 +2,9 @@
 use crate::{
     jobs::{Health, Observation},
     runs::{RunState, Timestamp},
-    status::{HostOutcome, HostStatus, JobReport, Target},
+    status::{HostOutcome, HostStatus, JobReport},
+    targets::Target,
+    terminal_text::clean,
     time_text,
 };
 use std::fmt::Write;
@@ -129,17 +131,6 @@ fn detail(job: &JobReport, now: Timestamp) -> String {
         ) => exit.to_string(),
         (Observation::Loaded { .. }, _, _) => "never exited".into(),
     }
-}
-
-/// Labels and host names come from files and other machines: keep terminal
-/// controls and invisible reordering characters out.
-fn clean(text: &str) -> String {
-    text.chars()
-        .map(|c| {
-            let invisible = matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2069}' | '\u{061C}' | '\u{FEFF}');
-            if c.is_control() || invisible { '?' } else { c }
-        })
-        .collect()
 }
 
 #[derive(Clone, Copy)]

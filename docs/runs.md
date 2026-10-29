@@ -106,6 +106,8 @@ never create the state directory.
 ```
 
 `state` is `running`, `finished` (with `ended_at` and `outcome`), or `lost`.
-`outcome` is `code`, `signal`, or `spawn_failed`. `logs` returns
+`outcome` is `code`, `signal`, `spawn_failed`, or `stopped` (ended by a signal
+after a stop request reached the recorder, as when the job is unloaded; not a
+failure of the job). `logs` returns
 `{"type":"logs","run":{…},"output":"…","truncated":false}`; a job without
 recorded runs fails with `not_found`.
