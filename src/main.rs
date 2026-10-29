@@ -1,14 +1,19 @@
 use clap::{Parser, Subcommand};
 use rhythm::{
+    authoring::{self, Added, Adoption, Caller, NewJob, OWNED_PREFIX, Recorder},
     history_render,
     jobs::{Label, RunStore},
+    kick::{self, KickResponse},
+    kick_render,
     launchd::Launchd,
     ledger::{self, Ledger},
     operation_error::{self, Error},
     recorder::{self, Recording},
+    recorder_link,
     remote::{Host, Ssh},
     run_history,
     runs::Timestamp,
+    schedule_input::{self, ScheduleInput},
     state_directory,
     status::{self, HostOutcome, Target},
     status_render,
@@ -19,6 +24,7 @@ use std::{
     io::{self, Write},
     path::PathBuf,
     process::ExitCode,
+    time::Duration,
 };
 
 #[derive(Parser)]
@@ -50,6 +56,62 @@ enum Commands {
         forward: bool,
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<OsString>,
+    },
+    /// Create a launchd job that records its runs, labelled `dev.rhythm.NAME`.
+    Add {
+        name: String,
+        /// Run every interval, as in 90s, 5m, 2h, or 1d.
+        #[arg(long, value_name = "INTERVAL")]
+        every: Option<String>,
+        /// Run daily at a local 24-hour time. Repeatable.
+        #[arg(long, value_name = "HH:MM")]
+        daily: Vec<String>,
+        /// Run weekly, as in mon@09:00. Repeatable.
+        #[arg(long, value_name = "DAY@HH:MM")]
+        weekly: Vec<String>,
+        /// Also run when the job loads, such as at login.
+        #[arg(long)]
+        at_load: bool,
+        /// Keep the command running, restarting it whenever it exits.
+        #[arg(long)]
+        keep_alive: bool,
+        /// Working directory (defaults to the home directory).
+        #[arg(long, value_name = "DIR")]
+        cwd: Option<PathBuf>,
+        /// Environment variable for the command. Repeatable. Never put secrets here.
+        #[arg(long = "env", value_name = "KEY=VALUE")]
+        environment: Vec<String>,
+        /// Replace an existing job created by `rhythm add` under this name.
+        #[arg(long)]
+        replace: bool,
+        #[arg(last = true, required = true, value_name = "COMMAND")]
+        command: Vec<String>,
+    },
+    /// Record the runs of an existing job without changing anything else about it.
+    Adopt {
+        job: String,
+        /// Reload the job even if it is running now, which stops that run.
+        #[arg(long)]
+        restart: bool,
+    },
+    /// Stop recording a job's runs, restoring its original command.
+    Unadopt {
+        job: String,
+        #[arg(long)]
+        restart: bool,
+    },
+    /// Unload and delete a job created by `rhythm add`; its history is kept.
+    Remove { job: String },
+    /// Start a job now.
+    Kick {
+        job: String,
+        /// Wait for the run to finish and report how it ended.
+        #[arg(long)]
+        wait: bool,
+        /// Longest wait, in seconds.
+        #[arg(long, default_value_t = 600, value_name = "SECONDS",
+              value_parser = clap::value_parser!(u64).range(1..=86400))]
+        timeout: u64,
     },
     #[command(name = "__drain", hide = true)]
     Drain {
@@ -126,22 +188,145 @@ fn main() -> ExitCode {
                 },
             )
         }
+        Commands::Add {
+            name,
+            every,
+            daily,
+            weekly,
+            at_load,
+            keep_alive,
+            cwd,
+            environment,
+            replace,
+            command,
+        } => {
+            let result = (|| {
+                let schedule = schedule_input::schedule(&ScheduleInput {
+                    every: every.as_deref(),
+                    daily: &daily,
+                    weekly: &weekly,
+                    at_load,
+                    keep_alive,
+                })?;
+                let home = std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .filter(|p| p.is_absolute())
+                    .ok_or(Error::InvalidRequest)?;
+                let current = std::env::current_dir().map_err(|_| Error::InvalidRequest)?;
+                let search_path = std::env::var("PATH").ok();
+                let caller = Caller {
+                    home: &home,
+                    current_directory: &current,
+                    search_path: search_path.as_deref(),
+                };
+                let (label, added) = authoring::add(
+                    &Launchd::current_user()?,
+                    &recorder_for(cli.data_dir.clone())?,
+                    &caller,
+                    NewJob {
+                        name,
+                        schedule,
+                        command,
+                        working_directory: cwd,
+                        environment,
+                        replace,
+                    },
+                )?;
+                Ok(serde_json::json!({
+                    "type": "added",
+                    "label": label.as_str(),
+                    "replaced": added == Added::Replaced,
+                }))
+            })();
+            respond(json, result, |added| {
+                let label = added["label"].as_str().unwrap_or_default();
+                let verb = if added["replaced"] == true {
+                    "Updated"
+                } else {
+                    "Added"
+                };
+                format!(
+                    "{verb} {label}. Start it now with `rhythm kick {}`.\n",
+                    label.trim_start_matches(OWNED_PREFIX)
+                )
+            })
+        }
+        Commands::Adopt { job, restart } => {
+            let result = authoring::resolve(&job).and_then(|label| {
+                let adoption = authoring::adopt(
+                    &Launchd::current_user()?,
+                    &recorder_for(cli.data_dir.clone())?,
+                    &label,
+                    restart,
+                )?;
+                Ok(serde_json::json!({
+                    "type": "adopted",
+                    "label": label.as_str(),
+                    "changed": adoption != Adoption::AlreadyRecorded,
+                }))
+            });
+            respond(json, result, |adopted| match adopted["changed"].as_bool() {
+                Some(true) => format!(
+                    "{} now records its runs.\n",
+                    adopted["label"].as_str().unwrap_or_default()
+                ),
+                _ => format!(
+                    "{} already records its runs.\n",
+                    adopted["label"].as_str().unwrap_or_default()
+                ),
+            })
+        }
+        Commands::Unadopt { job, restart } => {
+            let result = authoring::resolve(&job).and_then(|label| {
+                authoring::release(&Launchd::current_user()?, &label, restart)?;
+                Ok(serde_json::json!({"type": "unadopted", "label": label.as_str()}))
+            });
+            respond(json, result, |released| {
+                format!(
+                    "{} runs its original command again; its history is kept.\n",
+                    released["label"].as_str().unwrap_or_default()
+                )
+            })
+        }
+        Commands::Remove { job } => {
+            let result = authoring::resolve(&job).and_then(|label| {
+                authoring::remove(&Launchd::current_user()?, &label)?;
+                Ok(serde_json::json!({"type": "removed", "label": label.as_str()}))
+            });
+            respond(json, result, |removed| {
+                format!(
+                    "Removed {}; its history is kept.\n",
+                    removed["label"].as_str().unwrap_or_default()
+                )
+            })
+        }
+        Commands::Kick { job, wait, timeout } => {
+            keep_recorder_reachable(cli.data_dir.clone());
+            let result = authoring::resolve(&job).and_then(|label| {
+                kick::kick(
+                    &Launchd::current_user()?,
+                    &label,
+                    wait.then(|| Duration::from_secs(timeout)),
+                    &ledgers(cli.data_dir.clone()),
+                )
+            });
+            let failed =
+                matches!(&result, Ok(KickResponse { finished: Some(f), .. }) if !f.succeeded());
+            let code = respond(json, result, kick_render::render);
+            if failed { ExitCode::FAILURE } else { code }
+        }
         Commands::Drain { dir, forward } => {
             recorder::drain(dir, forward);
             ExitCode::SUCCESS
         }
         Commands::History { label, limit, host } => {
-            let result = label
-                .parse::<Label>()
-                .and_then(|label| match remote(host)? {
-                    Some(host) => Ssh::system().call(
-                        &host,
-                        &["history", label.as_str(), "--limit", &limit.to_string()],
-                    ),
-                    None => {
-                        run_history::history(local_ledger(cli.data_dir)?.as_ref(), &label, limit)
-                    }
-                });
+            let result = authoring::resolve(&label).and_then(|label| match remote(host)? {
+                Some(host) => Ssh::system().call(
+                    &host,
+                    &["history", label.as_str(), "--limit", &limit.to_string()],
+                ),
+                None => run_history::history(local_ledger(cli.data_dir)?.as_ref(), &label, limit),
+            });
             respond(json, result, |history| {
                 history_render::render(history, Timestamp::now(), &chrono::Local)
             })
@@ -152,26 +337,22 @@ fn main() -> ExitCode {
             bytes,
             host,
         } => {
-            let result = label
-                .parse::<Label>()
-                .and_then(|label| match remote(host)? {
-                    Some(host) => {
-                        let mut args = vec![
-                            "logs".to_owned(),
-                            label.to_string(),
-                            "--bytes".into(),
-                            bytes.to_string(),
-                        ];
-                        if let Some(run) = run {
-                            args.extend(["--run".into(), run.to_string()]);
-                        }
-                        let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                        Ssh::system().call(&host, &args)
+            let result = authoring::resolve(&label).and_then(|label| match remote(host)? {
+                Some(host) => {
+                    let mut args = vec![
+                        "logs".to_owned(),
+                        label.to_string(),
+                        "--bytes".into(),
+                        bytes.to_string(),
+                    ];
+                    if let Some(run) = run {
+                        args.extend(["--run".into(), run.to_string()]);
                     }
-                    None => {
-                        run_history::logs(local_ledger(cli.data_dir)?.as_ref(), &label, run, bytes)
-                    }
-                });
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    Ssh::system().call(&host, &args)
+                }
+                None => run_history::logs(local_ledger(cli.data_dir)?.as_ref(), &label, run, bytes),
+            });
             respond(json, result, |logs| {
                 if logs.truncated {
                     eprintln!("rhythm: earlier output of run {} is not shown", logs.run.id);
@@ -183,22 +364,14 @@ fn main() -> ExitCode {
 }
 
 fn status(json: bool, data_dir: Option<PathBuf>, hosts: &[String]) -> ExitCode {
+    keep_recorder_reachable(data_dir.clone());
     let targets = match targets(hosts) {
         Ok(targets) => targets,
         Err(error) => return failure(json, error),
     };
     let response = status::gather(
         &targets,
-        || {
-            // Inventory comes first: an unreadable ledger only hides run history.
-            status::jobs(&Launchd::current_user()?, &|store: &RunStore| {
-                let dir = match store {
-                    RunStore::Default => data_dir.clone(),
-                    RunStore::Directory(dir) => Some(dir.clone()),
-                };
-                local_ledger(dir).ok().flatten()
-            })
-        },
+        || status::jobs(&Launchd::current_user()?, &ledgers(data_dir.clone())),
         &Ssh::system(),
     );
     let complete = response
@@ -213,6 +386,43 @@ fn status(json: bool, data_dir: Option<PathBuf>, hosts: &[String]) -> ExitCode {
     match (write_output(&output), complete) {
         (ExitCode::SUCCESS, true) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
+    }
+}
+
+/// Each recorded job's ledger. An unreadable ledger only hides run history.
+fn ledgers(data_dir: Option<PathBuf>) -> impl Fn(&RunStore) -> Option<Ledger> {
+    move |store| {
+        let dir = match store {
+            RunStore::Default => data_dir.clone(),
+            RunStore::Directory(dir) => Some(dir.clone()),
+        };
+        local_ledger(dir).ok().flatten()
+    }
+}
+
+/// Jobs reach the recorder through a stable link to this executable.
+fn recorder_for(data_dir: Option<PathBuf>) -> operation_error::Result<Recorder> {
+    let root = state_directory::root(data_dir.clone())?;
+    Ok(Recorder {
+        executable: recorder_link::point(&root, &this_executable()?)?,
+        data_dir,
+        diagnostics: root.path().join("recorder.log"),
+    })
+}
+
+fn this_executable() -> operation_error::Result<PathBuf> {
+    std::env::current_exe()
+        .and_then(|p| p.canonicalize())
+        .map_err(|_| Error::InvalidRequest)
+}
+
+/// After an upgrade removed the executable jobs reach the recorder through,
+/// any command run from the new one restores that path.
+fn keep_recorder_reachable(data_dir: Option<PathBuf>) {
+    if let (Ok(Some(root)), Ok(executable)) =
+        (state_directory::existing(data_dir), this_executable())
+    {
+        let _ = recorder_link::repair(&root, &executable);
     }
 }
 

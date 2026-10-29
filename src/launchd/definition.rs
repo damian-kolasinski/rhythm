@@ -1,6 +1,6 @@
 //! Read a launchd property list into the job's label and activation.
 use crate::{
-    jobs::{Activation, Calendar, RunStore, Trigger},
+    jobs::{Activation, Calendar, Program, RunStore, Trigger},
     wrapper_command::Wrapped,
 };
 use plist::{Dictionary, Value};
@@ -18,6 +18,31 @@ pub enum Parsed {
     Empty,
     /// Anything else launchd itself would refuse to load.
     Invalid,
+}
+
+pub fn dictionary(bytes: &[u8]) -> Option<Dictionary> {
+    match Value::from_reader(std::io::Cursor::new(bytes)).ok()? {
+        Value::Dictionary(plist) => Some(plist),
+        _ => None,
+    }
+}
+
+/// The command as launchd starts it. `None` when the definition names both a
+/// `Program` and `ProgramArguments`, whose first element is then only `argv[0]`.
+pub fn program(plist: &Dictionary) -> Option<Program> {
+    let arguments = match (plist.get("Program"), plist.get("ProgramArguments")) {
+        (Some(program), None) => vec![program.as_string()?.to_owned()],
+        (None, Some(Value::Array(arguments))) if !arguments.is_empty() => arguments
+            .iter()
+            .map(|v| v.as_string().map(str::to_owned))
+            .collect::<Option<_>>()?,
+        _ => return None,
+    };
+    Some(Program {
+        arguments,
+        has_log_files: plist.contains_key("StandardOutPath")
+            || plist.contains_key("StandardErrorPath"),
+    })
 }
 
 pub fn parse(bytes: &[u8]) -> Parsed {
@@ -45,13 +70,8 @@ fn job(plist: &Dictionary) -> Option<Definition> {
             triggers: triggers(plist)?,
         },
     };
-    let arguments: Option<Vec<String>> =
-        program.and_then(|a| a.iter().map(|v| v.as_string().map(str::to_owned)).collect());
-    // With `Program`, launchd runs that file and ProgramArguments is only argv.
-    let recorded = arguments
-        .filter(|_| !plist.contains_key("Program"))
-        .as_deref()
-        .and_then(Wrapped::parse)
+    let recorded = self::program(plist)
+        .and_then(|p| Wrapped::parse(&p.arguments))
         .filter(|w| w.label.as_str() == label)
         .map(|w| w.data_dir.map_or(RunStore::Default, RunStore::Directory));
     Some(Definition {
