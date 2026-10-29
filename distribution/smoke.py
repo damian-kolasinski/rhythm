@@ -95,6 +95,23 @@ def verify(binary, release_version, supervised=False):
             "items"
         ] != []:
             raise RuntimeError("installed attention did not report a change once")
+        (home / ".claude").mkdir()
+        setup = cli(binary, home, "skill", "setup")
+        hooks = json.loads((home / ".claude/settings.json").read_text())["hooks"]
+        if (
+            [step["change"] for step in setup["steps"]] != ["installed", "installed"]
+            or "rhythm skill session-start" not in hooks["SessionStart"][0]["hooks"][0]["command"]
+            or not (home / ".claude/skills/rhythm/SKILL.md").is_file()
+        ):
+            raise RuntimeError("installed skill setup did not set up an agent")
+        session = subprocess.run(
+            [str(binary), "skill", "session-start", "--agent", "claude"],
+            capture_output=True,
+            timeout=30,
+            env={**os.environ, "HOME": str(home)},
+        )
+        if session.returncode != 0:
+            raise RuntimeError("installed session hook failed")
         if (
             cli(binary, home, "status", "--host", "-oProxyCommand=x", ok=False)["error"]["code"]
             != "invalid_request"
@@ -172,6 +189,7 @@ def verify(binary, release_version, supervised=False):
         "status": True,
         "recording": True,
         "attention": True,
+        "agents": True,
         "authoring": supervised,
         "supervision": supervised,
     }

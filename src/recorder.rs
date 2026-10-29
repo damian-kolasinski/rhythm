@@ -68,6 +68,10 @@ extern "C" fn forward(signal: libc::c_int) {
 
 extern "C" fn outlive(_: libc::c_int) {}
 
+/// Names the job in its command's environment, so tools it runs, such as an
+/// agent's session hook, know they run inside a job.
+pub const JOB: &str = "RHYTHM_JOB";
+
 pub struct Recording {
     pub program: Vec<OsString>,
     /// Also copy output to the recorder's own stdout and stderr, which launchd

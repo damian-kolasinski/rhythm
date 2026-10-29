@@ -1,5 +1,7 @@
 use clap::{Parser, Subcommand};
 use rhythm::{
+    agent_setup::{self, Agent, Scope},
+    agent_setup_render,
     attention::{self, AttentionHost, AttentionOutcome, AttentionResponse, Consumer},
     attention_render,
     attention_store::AttentionStore,
@@ -17,7 +19,7 @@ use rhythm::{
     run_history,
     runs::Timestamp,
     schedule_input::{self, ScheduleInput},
-    state_directory,
+    session_start, skill_guide, state_directory,
     status::{self, HostOutcome},
     status_render,
     targets::{self, Target},
@@ -42,6 +44,61 @@ struct Cli {
     data_dir: Option<PathBuf>,
     #[command(subcommand)]
     command: Commands,
+}
+
+#[derive(Subcommand)]
+enum SkillCommand {
+    /// Install the skill and session hook into the agents on this machine, or
+    /// those named with --agent; again, update what an older Rhythm installed
+    Setup {
+        /// Only AGENT; repeat for more [default: every agent found]
+        #[arg(long = "agent", value_enum, value_name = "AGENT")]
+        agents: Vec<AgentArg>,
+        /// Report what would change without changing anything
+        #[arg(long)]
+        dry_run: bool,
+        /// Replace a skill named rhythm that Rhythm didn't write
+        #[arg(long)]
+        force: bool,
+    },
+    /// Report whether each agent has the skill and session hook
+    Status,
+    /// Remove the skill and session hook, leaving everything Rhythm didn't install
+    Remove {
+        /// Only AGENT; repeat for more [default: every agent Rhythm knows]
+        #[arg(long = "agent", value_enum, value_name = "AGENT")]
+        agents: Vec<AgentArg>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Print the guide agents follow, or the reference NAME
+    Show {
+        /// One of the references the guide names, as in authoring
+        name: Option<String>,
+    },
+    /// What the session hook tells a new session of AGENT
+    #[command(hide = true)]
+    SessionStart {
+        #[arg(long, value_enum)]
+        agent: AgentArg,
+    },
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum AgentArg {
+    Claude,
+    Codex,
+    #[value(name = "opencode")]
+    OpenCode,
+}
+impl From<AgentArg> for Agent {
+    fn from(arg: AgentArg) -> Self {
+        match arg {
+            AgentArg::Claude => Agent::Claude,
+            AgentArg::Codex => Agent::Codex,
+            AgentArg::OpenCode => Agent::OpenCode,
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -129,6 +186,11 @@ enum Commands {
               value_parser = clap::value_parser!(u64).range(1..=86400))]
         timeout: u64,
     },
+    /// Set coding agents up to use Rhythm, and print the guide they follow.
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
     /// Show Rhythm with disposable synthetic jobs, removed when the demo ends.
     Demo {
         /// Skip the pauses between steps.
@@ -202,6 +264,9 @@ fn main() -> ExitCode {
             command,
         } => {
             // An unrecordable run still runs: the recorder falls back to the bare command.
+            // Marks the job for what its command runs, recorded or not.
+            // SAFETY: nothing else runs yet.
+            unsafe { std::env::set_var(recorder::JOB, &label) };
             let target = label.parse::<Label>().and_then(|label| {
                 state_directory::root(cli.data_dir)
                     .and_then(|root| Ledger::open(root, ledger::RECORDER_WAIT))
@@ -328,7 +393,7 @@ fn main() -> ExitCode {
             })
         }
         Commands::Kick { job, wait, timeout } => {
-            keep_recorder_reachable(cli.data_dir.clone());
+            keep_current(cli.data_dir.clone());
             let result = authoring::resolve(&job).and_then(|label| {
                 kick::kick(
                     &Launchd::current_user()?,
@@ -342,6 +407,7 @@ fn main() -> ExitCode {
             let code = respond(json, result, kick_render::render);
             if failed { ExitCode::FAILURE } else { code }
         }
+        Commands::Skill { command } => skill(json, cli.data_dir, command),
         Commands::Demo { fast } => {
             let result = this_executable().and_then(|exe| rhythm::demo::run(exe, fast, color()));
             match result {
@@ -398,7 +464,7 @@ fn main() -> ExitCode {
 }
 
 fn status(json: bool, data_dir: Option<PathBuf>, hosts: &[String]) -> ExitCode {
-    keep_recorder_reachable(data_dir.clone());
+    keep_current(data_dir.clone());
     let targets = match Target::list(hosts) {
         Ok(targets) => targets,
         Err(error) => return failure(json, error),
@@ -434,7 +500,7 @@ fn attention(
         (Ok(targets), Ok(consumer)) => (targets, consumer),
         (Err(error), _) | (_, Err(error)) => return failure(json, error),
     };
-    keep_recorder_reachable(data_dir.clone());
+    keep_current(data_dir.clone());
     let local = || {
         let store = match since_last_seen {
             true => Some(AttentionStore::open(&state_directory::root(
@@ -508,6 +574,125 @@ fn attention(
     }
 }
 
+fn skill(json: bool, data_dir: Option<PathBuf>, command: SkillCommand) -> ExitCode {
+    // Plain text whatever --json says, and never a failure: agents add it to
+    // the session as it is.
+    if let SkillCommand::SessionStart { agent } = command {
+        return session_start(agent.into(), data_dir);
+    }
+    let Some(home) = home() else {
+        return failure(json, Error::InvalidRequest);
+    };
+    let scope = Scope::user(home.clone());
+    let agents = |named: Vec<AgentArg>, default: Vec<Agent>| match named.is_empty() {
+        true => default,
+        false => named.into_iter().map(Agent::from).collect(),
+    };
+    let (steps, dry_run) = match command {
+        SkillCommand::Setup {
+            agents: named,
+            dry_run,
+            force,
+        } => (
+            agent_setup::setup(&scope, &agents(named, scope.found()), force, dry_run),
+            dry_run,
+        ),
+        SkillCommand::Remove {
+            agents: named,
+            dry_run,
+        } => (
+            agent_setup::remove(&scope, &agents(named, Agent::ALL.to_vec()), dry_run),
+            dry_run,
+        ),
+        SkillCommand::Status => {
+            let agents = agent_setup::status(&scope);
+            let output = match json {
+                true => to_json(&serde_json::json!({"type": "skill_status", "agents": agents})),
+                false => agent_setup_render::status(&agents),
+            };
+            return write_output(&output);
+        }
+        SkillCommand::Show { name } => {
+            return match skill_guide::show(name.as_deref()) {
+                Some(text) if json => write_output(&to_json(
+                    &serde_json::json!({"type": "skill_guide", "name": name, "text": text}),
+                )),
+                Some(text) => write_output(&text),
+                None => failure(json, Error::NotFound),
+            };
+        }
+        SkillCommand::SessionStart { .. } => unreachable!("handled above"),
+    };
+    let approvals: Vec<&str> = steps.iter().filter_map(|s| s.approval()).collect();
+    let output = match json {
+        true => to_json(&serde_json::json!({
+            "type": "skill_setup",
+            "dry_run": dry_run,
+            "steps": steps,
+            "approvals": approvals,
+        })),
+        false if dry_run => {
+            "Dry run: nothing was changed.\n".to_owned() + &agent_setup_render::steps(&steps, &home)
+        }
+        false => agent_setup_render::steps(&steps, &home),
+    };
+    match (
+        write_output(&output),
+        steps.iter().any(|s| s.change.failed()),
+    ) {
+        (ExitCode::SUCCESS, false) => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    }
+}
+
+/// Never fails or slows a session: anything that goes wrong, or takes too
+/// long, prints nothing.
+fn session_start(agent: Agent, data_dir: Option<PathBuf>) -> ExitCode {
+    // An agent run inside a job, as a scheduled `claude -p`, must not take
+    // the news from the operator's next interactive session.
+    if std::env::var_os(recorder::JOB).is_some() {
+        return ExitCode::SUCCESS;
+    }
+    let (sender, received) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        if let Some(home) = home() {
+            agent_setup::refresh(&Scope::user(home));
+        }
+        let context = (|| {
+            let store = AttentionStore::open(&state_directory::root(data_dir.clone())?)?;
+            let context = session_start::context(
+                agent,
+                &Launchd::current_user()?,
+                &ledgers(data_dir),
+                &store,
+                Timestamp::now(),
+            )?;
+            Ok::<_, Error>((store, context))
+        })();
+        let _ = sender.send(context);
+    });
+    if let Ok(Ok((store, context))) = received.recv_timeout(SESSION_START_DEADLINE)
+        && write_output(&context.text) == ExitCode::SUCCESS
+        && let Ok(consumer) = Consumer::parse(agent.id())
+    {
+        let _ = store.save(&consumer, &context.seen);
+    }
+    ExitCode::SUCCESS
+}
+
+/// Agents give the hook five seconds.
+const SESSION_START_DEADLINE: Duration = Duration::from_secs(3);
+
+fn home() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+}
+
+fn to_json(value: &serde_json::Value) -> String {
+    serde_json::to_string_pretty(value).unwrap() + "\n"
+}
+
 /// Each recorded job's ledger. An unreadable ledger only hides run history.
 fn ledgers(data_dir: Option<PathBuf>) -> impl Fn(&RunStore) -> Option<Ledger> {
     move |store| {
@@ -537,7 +722,7 @@ fn this_executable() -> operation_error::Result<PathBuf> {
 
 /// After an upgrade removed the executable jobs reach the recorder through,
 /// any command run from the new one restores that path.
-fn keep_recorder_reachable(data_dir: Option<PathBuf>) {
+fn keep_current(data_dir: Option<PathBuf>) {
     if let (Ok(Some(root)), Ok(executable)) =
         (state_directory::existing(data_dir), this_executable())
     {

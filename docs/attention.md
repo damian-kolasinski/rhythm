@@ -72,26 +72,6 @@ Hints for another machine include its `--host`.
 
 ## Session hooks
 
-Claude Code adds a `SessionStart` hook's output to the session's context. In
-`~/.claude/settings.json`:
-
-```json
-{
-  "hooks": {
-    "SessionStart": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "rhythm attention --since-last-seen --as claude-code"
-          }
-        ]
-      }
-    ]
-  }
-}
-```
-
-For tools without session hooks, an instruction in the user-level agent
-instructions does the same: "At the start of each session, run `rhythm attention
---since-last-seen --as codex` and mention anything it reports."
+`rhythm skill setup` installs a session hook into Claude Code and Codex that
+prints `attention --since-last-seen` for that agent at the start of every
+session, and nothing when nothing is new. See [setting agents up](agents.md).

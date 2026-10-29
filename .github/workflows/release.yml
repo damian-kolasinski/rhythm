@@ -12,6 +12,9 @@ on:
       - Cargo.toml
       - Cargo.lock
       - src/**
+      # Embedded in the binary as the agent guide.
+      - skill/**
+      - docs/**
 
 concurrency:
   group: release-${{ github.ref }}
