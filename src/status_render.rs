@@ -1,11 +1,13 @@
 //! Terminal rendering of a status response.
 use crate::{
     jobs::{Health, Observation},
+    runs::{RunState, Timestamp},
     status::{HostOutcome, HostStatus, JobReport, Target},
+    time_text,
 };
 use std::fmt::Write;
 
-pub fn render(hosts: &[HostStatus], color: bool) -> String {
+pub fn render(hosts: &[HostStatus], now: Timestamp, color: bool) -> String {
     let paint = Paint(color);
     let titled = hosts.len() > 1 || hosts.iter().any(|h| h.host != Target::LOCAL);
     let mut out = String::new();
@@ -23,13 +25,13 @@ pub fn render(hosts: &[HostStatus], color: bool) -> String {
             HostOutcome::Jobs { jobs } if jobs.is_empty() => {
                 out.push_str("No launchd jobs in LaunchAgents.\n")
             }
-            HostOutcome::Jobs { jobs } => table(&mut out, jobs, paint),
+            HostOutcome::Jobs { jobs } => table(&mut out, jobs, now, paint),
         }
     }
     out
 }
 
-fn table(out: &mut String, jobs: &[JobReport], paint: Paint) {
+fn table(out: &mut String, jobs: &[JobReport], now: Timestamp, paint: Paint) {
     let rows: Vec<[String; 4]> = jobs
         .iter()
         .map(|job| {
@@ -39,7 +41,7 @@ fn table(out: &mut String, jobs: &[JobReport], paint: Paint) {
                     .as_ref()
                     .map_or_else(|| "-".to_owned(), ToString::to_string),
                 job.health.name().to_owned(),
-                detail(job),
+                detail(job, now),
             ]
         })
         .collect();
@@ -98,19 +100,34 @@ fn table(out: &mut String, jobs: &[JobReport], paint: Paint) {
     .unwrap();
 }
 
-fn detail(job: &JobReport) -> String {
-    match (&job.observation, job.health) {
-        (_, Health::Invalid) => "unreadable definition".into(),
-        (Observation::Unloaded, _) => "not loaded".into(),
-        (Observation::Loaded { pid: Some(pid), .. }, _) => format!("pid {pid}"),
+/// Recorded runs say when; launchd alone only knows the last exit.
+fn detail(job: &JobReport, now: Timestamp) -> String {
+    let recorded = job
+        .last_run
+        .as_ref()
+        .map(|run| (run.started_at, &run.state));
+    match (&job.observation, job.health, recorded) {
+        (_, Health::Invalid, _) => "unreadable definition".into(),
+        (Observation::Unloaded, _, _) => "not loaded".into(),
+        (Observation::Loaded { pid: Some(pid), .. }, _, Some((started, RunState::Running))) => {
+            format!("pid {pid}, for {}", time_text::duration(now.0 - started.0))
+        }
+        (Observation::Loaded { pid: Some(pid), .. }, _, _) => format!("pid {pid}"),
+        (_, _, Some((_, RunState::Finished { ended_at, outcome }))) => {
+            format!("{outcome}, {}", time_text::ago(*ended_at, now))
+        }
+        (_, _, Some((started, RunState::Lost))) => {
+            format!("lost, started {}", time_text::ago(started, now))
+        }
         (
             Observation::Loaded {
                 last_exit: Some(exit),
                 ..
             },
             _,
+            _,
         ) => exit.to_string(),
-        (Observation::Loaded { .. }, _) => "never exited".into(),
+        (Observation::Loaded { .. }, _, _) => "never exited".into(),
     }
 }
 

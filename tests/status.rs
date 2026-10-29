@@ -36,10 +36,15 @@ impl Fixture {
         self.temp.path()
     }
     fn define(&self, file: &str, label: &str, body: &str) {
+        let program = if body.contains("ProgramArguments") {
+            ""
+        } else {
+            "<key>Program</key><string>/bin/true</string>"
+        };
         fs::write(
             self.path().join("agents").join(file),
             format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{label}</string><key>Program</key><string>/bin/true</string>{body}</dict></plist>"#
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{label}</string>{program}{body}</dict></plist>"#
             ),
         )
         .unwrap();
@@ -61,7 +66,7 @@ impl Fixture {
         )
     }
     fn report(&self) -> Vec<JobReport> {
-        status::jobs(&self.launchd()).unwrap()
+        status::jobs(&self.launchd(), &|_| None).unwrap()
     }
 }
 
@@ -171,7 +176,8 @@ fn json_contract_round_trips_for_remote_hosts() {
             "label": "com.example.a",
             "health": "failing",
             "activation": {"type": "triggered", "triggers": [{"type": "at_load"}]},
-            "observation": {"state": "loaded", "runs": 1, "last_exit": {"type": "signal", "signal": 15}}
+            "observation": {"state": "loaded", "runs": 1, "last_exit": {"type": "signal", "signal": 15}},
+            "recorded": false
         })
     );
     assert_eq!(
@@ -193,7 +199,7 @@ fn an_unrunnable_launchctl_is_reported() {
     f.define("a.plist", "com.example.a", "");
     fs::remove_file(f.path().join("launchctl")).unwrap();
     assert_eq!(
-        status::jobs(&f.launchd()),
+        status::jobs(&f.launchd(), &|_| None),
         Err(Error::SupervisorUnavailable)
     );
 }
@@ -339,7 +345,7 @@ fn unreadable_definitions_are_reported_and_fifos_are_skipped() {
     );
     use std::os::unix::fs::PermissionsExt;
     fs::set_permissions(f.path().join("agents"), fs::Permissions::from_mode(0o000)).unwrap();
-    let result = status::jobs(&f.launchd());
+    let result = status::jobs(&f.launchd(), &|_| None);
     fs::set_permissions(f.path().join("agents"), fs::Permissions::from_mode(0o700)).unwrap();
     assert_eq!(result, Err(Error::DefinitionsUnavailable));
 }
@@ -379,4 +385,65 @@ fn invalid_requests_are_reported_on_stderr() {
         String::from_utf8_lossy(&output.stderr),
         "Invalid command. Run rhythm --help.\n"
     );
+}
+
+#[test]
+fn recorded_jobs_carry_their_newest_run() {
+    use rhythm::{
+        jobs::Label,
+        jobs::RunStore,
+        ledger::{self, Ledger},
+        private_storage::Root,
+        runs::{Outcome, Timestamp},
+    };
+    let f = Fixture::new();
+    let state = f.path().join("state").display().to_string();
+    let wrapped = |label: &str| {
+        format!(
+            "<key>ProgramArguments</key><array><string>/opt/bin/rhythm</string><string>--data-dir</string><string>{state}</string><string>run</string><string>{label}</string><string>--</string><string>/bin/true</string></array>"
+        )
+    };
+    f.define(
+        "a.plist",
+        "com.example.recorded",
+        &wrapped("com.example.recorded"),
+    );
+    f.observe(
+        "gui",
+        "com.example.recorded",
+        "\truns = 2\n\tlast exit code = 1\n",
+    );
+    f.define("b.plist", "com.example.plain", "");
+    f.observe(
+        "gui",
+        "com.example.plain",
+        "\truns = 2\n\tlast exit code = 0\n",
+    );
+    let state = f.path().join("state");
+    let ledger = Ledger::open(Root::open(state.clone()).unwrap(), ledger::READER_WAIT).unwrap();
+    for label in ["com.example.recorded", "com.example.plain"] {
+        let label: Label = label.parse().unwrap();
+        let id = ledger.start(&label, 1, Timestamp(1000)).unwrap();
+        ledger
+            .finish(id, Timestamp(2000), Outcome::Code { code: 1 })
+            .unwrap();
+    }
+    drop(ledger);
+    let requested = std::cell::RefCell::new(vec![]);
+    let reports = status::jobs(&f.launchd(), &|store| {
+        requested.borrow_mut().push(store.clone());
+        let RunStore::Directory(dir) = store else {
+            return None;
+        };
+        Ledger::open_existing(Root::open(dir.clone()).unwrap()).unwrap()
+    })
+    .unwrap();
+    // Each job's own state directory is read, once.
+    assert_eq!(*requested.borrow(), [RunStore::Directory(state)]);
+    assert_eq!(reports[0].label, "com.example.recorded");
+    assert!(reports[0].recorded);
+    assert_eq!(reports[0].last_run.as_ref().unwrap().id, 1);
+    // History of a job that no longer records is not attributed to it.
+    assert!(!reports[1].recorded);
+    assert_eq!(reports[1].last_run, None);
 }

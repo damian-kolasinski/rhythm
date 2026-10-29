@@ -5,7 +5,7 @@ mod print;
 
 use crate::{
     bounded_command::{self, Failure},
-    jobs::{Activation, Job, Observation, Supervisor},
+    jobs::{Job, Observation, Supervisor},
     operation_error::{Error, Result},
 };
 use definition::Parsed;
@@ -87,37 +87,40 @@ impl Supervisor for Launchd {
             })
             .collect();
         paths.sort();
-        let definitions: Vec<(String, Option<Activation>)> = paths
+        let mut jobs: Vec<Job> = paths
             .iter()
             .filter_map(|path| {
-                match read(path).map_or(Parsed::Invalid, |b| definition::parse(&b)) {
-                    Parsed::Job(d) => Some((d.label, Some(d.activation))),
-                    Parsed::Empty => None,
-                    Parsed::Invalid => Some((
-                        path.file_stem().unwrap().to_string_lossy().into_owned(),
-                        None,
-                    )),
-                }
+                let (label, activation, recorded) =
+                    match read(path).map_or(Parsed::Invalid, |b| definition::parse(&b)) {
+                        Parsed::Job(d) => (d.label, Some(d.activation), d.recorded),
+                        Parsed::Empty => return None,
+                        Parsed::Invalid => (
+                            path.file_stem().unwrap().to_string_lossy().into_owned(),
+                            None,
+                            None,
+                        ),
+                    };
+                Some(Job {
+                    label,
+                    activation,
+                    recorded,
+                    observation: Observation::Unloaded,
+                })
             })
             .collect();
-        let mut jobs = Vec::with_capacity(definitions.len());
-        for batch in definitions.chunks(PARALLEL) {
+        for batch in jobs.chunks_mut(PARALLEL) {
             let observations: Vec<Result<Observation>> = std::thread::scope(|scope| {
                 let pending: Vec<_> = batch
                     .iter()
-                    .map(|(label, _)| scope.spawn(|| self.observe(label)))
+                    .map(|job| scope.spawn(|| self.observe(&job.label)))
                     .collect();
                 pending
                     .into_iter()
                     .map(|p| p.join().unwrap_or(Err(Error::SupervisorUnavailable)))
                     .collect()
             });
-            for ((label, activation), observation) in batch.iter().cloned().zip(observations) {
-                jobs.push(Job {
-                    label,
-                    activation,
-                    observation: observation?,
-                });
+            for (job, observation) in batch.iter_mut().zip(observations) {
+                job.observation = observation?;
             }
         }
         Ok(jobs)

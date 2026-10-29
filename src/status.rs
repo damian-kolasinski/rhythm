@@ -1,10 +1,13 @@
 //! Report every job on the requested machines, most urgent first.
 use crate::{
-    jobs::{Activation, Health, Job, Observation, Supervisor},
+    jobs::{Activation, Health, Job, Observation, RunStore, Supervisor},
+    ledger::Ledger,
     operation_error::{Error, Result},
     remote::{self, Ssh},
+    runs::Run,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobReport {
@@ -14,26 +17,32 @@ pub struct JobReport {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub activation: Option<Activation>,
     pub observation: Observation,
+    /// Runs through Rhythm's recorder.
+    pub recorded: bool,
+    /// The newest recorded run, for recorded jobs that have one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<Run>,
 }
-impl From<Job> for JobReport {
-    fn from(job: Job) -> Self {
+impl JobReport {
+    fn new(job: Job, last_run: Option<Run>) -> Self {
         Self {
             health: Health::assess(job.activation.as_ref(), &job.observation),
             label: job.label,
             activation: job.activation,
             observation: job.observation,
+            recorded: job.recorded.is_some(),
+            last_run,
         }
     }
-}
-impl JobReport {
     /// A report from another machine is data: health follows from its facts.
     fn reassessed(self) -> Self {
-        Job {
+        let job = Job {
             label: self.label,
             activation: self.activation,
+            recorded: self.recorded.then_some(RunStore::Default),
             observation: self.observation,
-        }
-        .into()
+        };
+        Self::new(job, self.last_run)
     }
 }
 
@@ -77,8 +86,28 @@ impl Target {
     }
 }
 
-pub fn jobs(supervisor: &impl Supervisor) -> Result<Vec<JobReport>> {
-    let mut reports: Vec<JobReport> = supervisor.jobs()?.into_iter().map(Into::into).collect();
+/// Recorded jobs carry their newest run from the ledger their recorder writes to.
+pub fn jobs(
+    supervisor: &impl Supervisor,
+    ledgers: &dyn Fn(&RunStore) -> Option<Ledger>,
+) -> Result<Vec<JobReport>> {
+    let mut opened: HashMap<RunStore, Option<Ledger>> = HashMap::new();
+    let mut reports = vec![];
+    for job in supervisor.jobs()? {
+        let last_run = match &job.recorded {
+            Some(store) => {
+                let ledger = opened
+                    .entry(store.clone())
+                    .or_insert_with(|| ledgers(store));
+                match ledger {
+                    Some(ledger) => ledger.latest(&job.label)?,
+                    None => None,
+                }
+            }
+            None => None,
+        };
+        reports.push(JobReport::new(job, last_run));
+    }
     reports.sort_by(|a, b| (a.health, &a.label).cmp(&(b.health, &b.label)));
     Ok(reports)
 }

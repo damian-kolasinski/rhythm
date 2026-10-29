@@ -2,16 +2,20 @@
 
 Rhythm shows the background jobs agents leave on your machines and which of
 them need attention. launchd keeps running them; Rhythm reads what launchd
-knows and makes it one command away for you and your agents.
+knows, records each run of the jobs that opt in, and makes it one command away
+for you and your agents.
 
 ```sh
 rhythm status                    # every user launchd job, attention first
 rhythm status --host devbox      # another machine over ssh
+rhythm history com.example.scan  # recorded runs, newest first
+rhythm logs com.example.scan     # output of the newest run
 rhythm --json status             # structured output for agents
 ```
 
 See [VISION.md](VISION.md) for scope, [status](docs/status.md) for states and
-the JSON contract, and [distribution](docs/distribution.md) for signed
+the JSON contract, [recorded runs](docs/runs.md) for history, output, and
+retention, and [distribution](docs/distribution.md) for signed
 installation. Real job definitions and output belong in private storage, outside
 this repository.
 
@@ -44,5 +48,6 @@ python distribution/smoke.py --binary target/debug/rhythm --version 0.1.1 --laun
 ```
 
 Tests use synthetic definitions, a fake `launchctl` and `ssh` at the process
-boundary, and golden files for terminal output. Submit reviewed changes through
+boundary, real recorder processes with temporary state, and golden files for
+terminal output. Submit reviewed changes through
 mergegate.

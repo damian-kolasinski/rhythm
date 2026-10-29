@@ -1,10 +1,15 @@
 //! Read a launchd property list into the job's label and activation.
-use crate::jobs::{Activation, Calendar, Trigger};
+use crate::{
+    jobs::{Activation, Calendar, RunStore, Trigger},
+    wrapper_command::Wrapped,
+};
 use plist::{Dictionary, Value};
 
 pub struct Definition {
     pub label: String,
     pub activation: Activation,
+    /// Runs through `rhythm run` under its own label.
+    pub recorded: Option<RunStore>,
 }
 
 pub enum Parsed {
@@ -40,7 +45,20 @@ fn job(plist: &Dictionary) -> Option<Definition> {
             triggers: triggers(plist)?,
         },
     };
-    Some(Definition { label, activation })
+    let arguments: Option<Vec<String>> =
+        program.and_then(|a| a.iter().map(|v| v.as_string().map(str::to_owned)).collect());
+    // With `Program`, launchd runs that file and ProgramArguments is only argv.
+    let recorded = arguments
+        .filter(|_| !plist.contains_key("Program"))
+        .as_deref()
+        .and_then(Wrapped::parse)
+        .filter(|w| w.label.as_str() == label)
+        .map(|w| w.data_dir.map_or(RunStore::Default, RunStore::Directory));
+    Some(Definition {
+        label,
+        activation,
+        recorded,
+    })
 }
 
 fn triggers(plist: &Dictionary) -> Option<Vec<Trigger>> {
@@ -193,6 +211,26 @@ mod tests {
         assert!(matches!(parse(&xml("", "")), Parsed::Invalid));
         let no_program = br#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.example.job</string><key>ProgramArguments</key><array/></dict></plist>"#;
         assert!(matches!(parse(no_program), Parsed::Invalid));
+    }
+
+    #[test]
+    fn recognizes_jobs_recorded_under_their_own_label() {
+        let wrapped = |label: &str| {
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>com.example.job</string><key>ProgramArguments</key><array><string>/opt/bin/rhythm</string><string>run</string><string>{label}</string><string>--</string><string>/bin/true</string></array></dict></plist>"#
+            )
+        };
+        let recorded =
+            |bytes: &[u8]| matches!(parse(bytes), Parsed::Job(d) if d.recorded.is_some());
+        assert!(recorded(wrapped("com.example.job").as_bytes()));
+        assert!(!recorded(wrapped("com.example.other").as_bytes()));
+        assert!(!recorded(&xml("com.example.job", "")));
+        // With Program, launchd runs that file; ProgramArguments is only argv.
+        let program_key = wrapped("com.example.job").replace(
+            "<key>ProgramArguments</key>",
+            "<key>Program</key><string>/bin/true</string><key>ProgramArguments</key>",
+        );
+        assert!(!recorded(program_key.as_bytes()));
     }
 
     #[test]
