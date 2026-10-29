@@ -1,5 +1,7 @@
 //! Find, record, and surface the background jobs agents leave on a machine.
 //! launchd runs the jobs; Rhythm observes them.
+pub mod agent_setup;
+pub mod agent_setup_render;
 pub mod attention;
 pub mod attention_render;
 pub mod attention_store;
@@ -23,6 +25,8 @@ pub mod run_history;
 pub mod run_output;
 pub mod runs;
 pub mod schedule_input;
+pub mod session_start;
+pub mod skill_guide;
 pub mod state_directory;
 pub mod status;
 pub mod status_render;

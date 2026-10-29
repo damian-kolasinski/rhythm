@@ -34,8 +34,9 @@ rhythm logs com.example.scan --host devbox   # another machine over ssh
 
 ## What the recorder changes
 
-Nothing about how the job runs. The command inherits launchd's environment,
-working directory, stdin, and process group, so launchd's process-group cleanup
+Almost nothing about how the job runs. The command inherits launchd's
+environment, plus `RHYTHM_JOB` naming the job so tools it runs know they run
+inside one, and launchd's working directory, stdin, and process group, so launchd's process-group cleanup
 and keep-alive rules apply as before. Termination, interrupt, hangup, quit,
 and user signals sent to the recorder are forwarded to the command. The
 recorder then exits with the command's exit code, or dies by the same signal

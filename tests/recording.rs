@@ -567,3 +567,10 @@ fn a_missing_command_notifies_but_a_requested_stop_does_not() {
         std::thread::sleep(Duration::from_millis(20));
     }
 }
+
+#[test]
+fn the_command_knows_which_job_it_runs_in() {
+    let f = Fixture::new();
+    f.record(&[], "echo \"$RHYTHM_JOB\"");
+    assert_eq!(f.json(&["logs", LABEL])["output"], "com.example.job\n");
+}

@@ -13,14 +13,17 @@ rhythm kick report --wait        # run now and see how it ended
 rhythm adopt com.example.scan    # record an existing job's runs
 rhythm history report            # recorded runs, newest first
 rhythm logs report               # output of the newest run
-rhythm attention --since-last-seen --as claude-code  # what broke since last look
+rhythm attention --since-last-seen --as claude  # what broke since last look
+rhythm skill setup               # teach Claude Code, Codex, and OpenCode to use Rhythm
 ```
 
 - [Status](docs/status.md): states, other machines, and the JSON contract.
 - [Recorded runs](docs/runs.md): the recorder, history, output, and retention.
 - [Creating and adopting jobs](docs/authoring.md): `add`, `adopt`, `remove`, `kick`.
 - [Attention and notifications](docs/attention.md): failure notifications and
-  session hooks for agents.
+  what broke since an agent last looked.
+- [Setting agents up](docs/agents.md): the skill and session hook `rhythm skill
+  setup` installs, and what it leaves alone.
 - [Distribution](docs/distribution.md): signed installation and releases.
 
 See [VISION.md](VISION.md) for scope. Real job definitions and output belong in

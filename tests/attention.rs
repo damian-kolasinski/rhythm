@@ -223,3 +223,28 @@ fn renders_attention_as_actionable_lines_and_silence_as_nothing() {
     };
     assert_eq!(render(&quiet, NOW), "");
 }
+
+#[test]
+fn the_session_hook_reports_news_once_per_agent() {
+    use rhythm::{agent_setup::Agent, session_start};
+    let f = Fixture::new();
+    f.define("dev.rhythm.report");
+    f.observe("dev.rhythm.report", 1, 1);
+    f.record("dev.rhythm.report", 1);
+    let store = AttentionStore::open(&f.state()).unwrap();
+    let start = |agent| {
+        let context = session_start::context(agent, &f.launchd(), &ledgers, &store, NOW).unwrap();
+        store
+            .save(&Consumer::parse(Agent::id(agent)).unwrap(), &context.seen)
+            .unwrap();
+        context.text
+    };
+    let text = start(Agent::Claude);
+    assert!(
+        text.starts_with("Background jobs need attention:\n! dev.rhythm.report failed: exit 1")
+    );
+    assert!(text.contains("`rhythm skill show`"));
+    assert_eq!(start(Agent::Claude), "");
+    // Codex keeps its own place.
+    assert!(!start(Agent::Codex).is_empty());
+}
