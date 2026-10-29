@@ -14,6 +14,7 @@ pub enum Error {
     UnsupportedDefinition,
     TimedOut,
     Refused,
+    DemoJobsLoaded,
     RollbackIncomplete,
     StorageUnavailable,
     InsecureStorage,
@@ -39,6 +40,9 @@ impl Error {
             Self::NotOwned => "Rhythm only removes jobs it created with `rhythm add`.",
             Self::UnsupportedDefinition => {
                 "The job's definition uses a form Rhythm cannot change safely."
+            }
+            Self::DemoJobsLoaded => {
+                "Jobs from an interrupted demo are still loaded. Remove them with `launchctl bootout gui/$UID/LABEL` for dev.rhythm.demo-backup, dev.rhythm.demo-report, and com.example.demo-sync."
             }
             Self::Refused => "launchd refused the job's definition; nothing was changed.",
             Self::RollbackIncomplete => {

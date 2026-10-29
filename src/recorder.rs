@@ -3,8 +3,10 @@
 //! process group, and the recorder exits the way the command did, so launchd
 //! still sees the job's real result. Recording never stops the job from running.
 use crate::{
+    failure_notice::Notice,
     jobs::Label,
     ledger::{Ledger, RunLock},
+    notifier::Notifier,
     operation_error::Result,
     run_output::OutputLog,
     runs::{Outcome, Timestamp},
@@ -20,7 +22,7 @@ use std::{
     process::{Child, Command, Stdio},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicI32, AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicI32, AtomicU64, Ordering},
         mpsc,
     },
     time::{Duration, Instant},
@@ -43,9 +45,17 @@ const DRAIN_FDS: [RawFd; 2] = [3, 4];
 static CHILD: AtomicI32 = AtomicI32::new(0);
 /// Signals received before the command started, as a bit set.
 static PENDING: AtomicU64 = AtomicU64::new(0);
+/// Set when a stop request arrived, as when the job is unloaded or the user logs out.
+static STOPPED: AtomicBool = AtomicBool::new(false);
 
 extern "C" fn forward(signal: libc::c_int) {
     // Only async-signal-safe work here.
+    if matches!(
+        signal,
+        libc::SIGTERM | libc::SIGINT | libc::SIGHUP | libc::SIGQUIT
+    ) {
+        STOPPED.store(true, Ordering::SeqCst);
+    }
     match CHILD.load(Ordering::SeqCst) {
         0 => {
             PENDING.fetch_or(1 << signal, Ordering::SeqCst);
@@ -95,10 +105,10 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
             let lock = RunLock::hold(&dir).ok()?;
             Some((OutputLog::create(&dir).ok()?, dir, lock))
         });
-        Ok((ledger, id, storage))
+        Ok((ledger, label, id, storage))
     });
     stop_if_signalled(&started);
-    let (ledger, id, storage) = match started {
+    let (ledger, label, id, storage) = match started {
         Ok(started) => started,
         Err(error) => {
             eprintln!("rhythm: this run cannot be recorded ({error}); running the command anyway");
@@ -120,6 +130,8 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
         Ok(child) => child,
         Err(error) => {
             let _ = ledger.finish(id, Timestamp::now(), Outcome::SpawnFailed);
+            // A deleted script or a wrong path is the most common silent breakage.
+            notify(&ledger, &label, id, Outcome::SpawnFailed);
             eprintln!("rhythm: the command could not be started");
             std::process::exit(exit_code_for(&error));
         }
@@ -156,9 +168,14 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
     {
         open -= 1;
     }
+    let outcome = match outcome {
+        Outcome::Signal { signal } if STOPPED.load(Ordering::SeqCst) => Outcome::Stopped { signal },
+        outcome => outcome,
+    };
     if ledger.finish(id, Timestamp::now(), outcome).is_err() {
         eprintln!("rhythm: the outcome of this run could not be recorded");
     }
+    notify(&ledger, &label, id, outcome);
     if open > 0 {
         // Descendants still hold the pipes. Closing them would kill those
         // descendants with SIGPIPE, which a direct launch would not.
@@ -170,6 +187,21 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
     CHILD.store(0, Ordering::SeqCst);
     reap(&mut child);
     exit_as(outcome)
+}
+
+/// Tells the operator when the job starts failing or recovers. A run ended by
+/// a stop request is not a failure of the job.
+fn notify(ledger: &Ledger, label: &Label, id: i64, outcome: Outcome) {
+    if STOPPED.load(Ordering::SeqCst) {
+        return;
+    }
+    let previous = ledger.previous_finished(label.as_str(), id).ok().flatten();
+    if let Some(notice) = Notice::after(previous.as_ref().map(|r| &r.state), outcome) {
+        Notifier::from_environment().deliver(
+            &notice.title(label.as_str()),
+            &notice.message(label.as_str()),
+        );
+    }
 }
 
 fn command(program: &[OsString]) -> Command {
@@ -184,10 +216,10 @@ fn pending() -> Vec<libc::c_int> {
 }
 
 /// launchd asked the job to stop before the command started: do not start it.
-fn stop_if_signalled<T>(started: &Result<(Ledger, i64, T)>) {
+fn stop_if_signalled<T>(started: &Result<(Ledger, Label, i64, T)>) {
     if let Some(signal) = pending().first() {
         let outcome = Outcome::Signal { signal: *signal };
-        if let Ok((ledger, id, _)) = started {
+        if let Ok((ledger, _, id, _)) = started {
             let _ = ledger.finish(*id, Timestamp::now(), outcome);
         }
         exit_as(outcome);
@@ -344,7 +376,7 @@ fn exit_as(outcome: Outcome) -> ! {
     let _ = io::stderr().flush();
     match outcome {
         Outcome::Code { code } => std::process::exit(code),
-        Outcome::Signal { signal } => unsafe {
+        Outcome::Signal { signal } | Outcome::Stopped { signal } => unsafe {
             // Dying like the command must not leave a core or crash report of our own.
             let none = libc::rlimit {
                 rlim_cur: 0,

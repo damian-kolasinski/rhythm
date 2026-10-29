@@ -5,6 +5,7 @@ use crate::{
     operation_error::{Error, Result},
     remote::{self, Ssh},
     runs::Run,
+    targets::{self, Target},
 };
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -22,6 +23,9 @@ pub struct JobReport {
     /// The newest recorded run, for recorded jobs that have one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run: Option<Run>,
+    /// Where a local recorded job's runs are kept; never sent to other machines.
+    #[serde(skip)]
+    pub run_store: Option<RunStore>,
 }
 impl JobReport {
     fn new(job: Job, last_run: Option<Run>) -> Self {
@@ -31,6 +35,7 @@ impl JobReport {
             activation: job.activation,
             observation: job.observation,
             recorded: job.recorded.is_some(),
+            run_store: job.recorded,
             last_run,
         }
     }
@@ -42,7 +47,10 @@ impl JobReport {
             recorded: self.recorded.then_some(RunStore::Default),
             observation: self.observation,
         };
-        Self::new(job, self.last_run)
+        Self {
+            run_store: None,
+            ..Self::new(job, self.last_run)
+        }
     }
 }
 
@@ -62,28 +70,6 @@ pub struct HostStatus {
 pub enum HostOutcome {
     Jobs { jobs: Vec<JobReport> },
     Failed { error: Error },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Target {
-    Local,
-    Remote(remote::Host),
-}
-impl Target {
-    pub const LOCAL: &str = "local";
-    pub fn parse(name: &str) -> Result<Self> {
-        if name == Self::LOCAL {
-            Ok(Self::Local)
-        } else {
-            name.parse().map(Self::Remote)
-        }
-    }
-    pub fn name(&self) -> &str {
-        match self {
-            Self::Local => Self::LOCAL,
-            Self::Remote(host) => host.as_str(),
-        }
-    }
 }
 
 /// Recorded jobs carry their newest run from the ledger their recorder writes to.
@@ -112,47 +98,32 @@ pub fn jobs(
     Ok(reports)
 }
 
-/// Queries every target concurrently; one unreachable host does not hide the others.
+/// Every target's jobs, reading other machines over ssh.
 pub fn gather(
     targets: &[Target],
     local: impl Fn() -> Result<Vec<JobReport>> + Sync,
     ssh: &Ssh,
 ) -> StatusResponse {
-    let hosts = std::thread::scope(|scope| {
-        let pending: Vec<_> =
-            targets
-                .iter()
-                .map(|target| {
-                    let local = &local;
-                    scope.spawn(move || match target {
-                        Target::Local => local(),
-                        Target::Remote(host) => ssh
-                            .call::<StatusResponse>(host, &["status"])
-                            .and_then(|r| match r.hosts.into_iter().next() {
-                                Some(HostStatus {
-                                    outcome: HostOutcome::Jobs { jobs },
-                                    ..
-                                }) => Ok(jobs.into_iter().map(JobReport::reassessed).collect()),
-                                Some(HostStatus {
-                                    outcome: HostOutcome::Failed { error },
-                                    ..
-                                }) => Err(error),
-                                None => Err(Error::RemoteIncompatible),
-                            }),
-                    })
-                })
-                .collect();
-        targets
-            .iter()
-            .zip(pending)
-            .map(|(target, pending)| HostStatus {
-                host: target.name().to_owned(),
-                outcome: match pending.join().unwrap_or(Err(Error::RemoteUnavailable)) {
+    let remote = |host: &remote::Host| {
+        let response: StatusResponse = ssh.call(host, &["status"])?;
+        match response.hosts.into_iter().next().map(|h| h.outcome) {
+            Some(HostOutcome::Jobs { jobs }) => {
+                Ok(jobs.into_iter().map(JobReport::reassessed).collect())
+            }
+            Some(HostOutcome::Failed { error }) => Err(error),
+            None => Err(Error::RemoteIncompatible),
+        }
+    };
+    StatusResponse {
+        hosts: targets::each(targets, local, remote)
+            .into_iter()
+            .map(|(host, result)| HostStatus {
+                host,
+                outcome: match result {
                     Ok(jobs) => HostOutcome::Jobs { jobs },
                     Err(error) => HostOutcome::Failed { error },
                 },
             })
-            .collect()
-    });
-    StatusResponse { hosts }
+            .collect(),
+    }
 }

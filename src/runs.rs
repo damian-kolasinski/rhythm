@@ -27,7 +27,7 @@ impl RunState {
     pub fn failed(&self) -> bool {
         match self {
             Self::Running => false,
-            Self::Finished { outcome, .. } => !outcome.succeeded(),
+            Self::Finished { outcome, .. } => outcome.failed(),
             Self::Lost => true,
         }
     }
@@ -44,10 +44,18 @@ pub enum Outcome {
     },
     /// The command could not be started, for example because it does not exist.
     SpawnFailed,
+    /// Ended by a signal after launchd or the user asked the job to stop.
+    Stopped {
+        signal: i32,
+    },
 }
 impl Outcome {
     pub fn succeeded(self) -> bool {
         self == Self::Code { code: 0 }
+    }
+    /// A requested stop says nothing about whether the job works.
+    pub fn failed(self) -> bool {
+        !self.succeeded() && !matches!(self, Self::Stopped { .. })
     }
 }
 impl fmt::Display for Outcome {
@@ -56,6 +64,7 @@ impl fmt::Display for Outcome {
             Self::Code { code } => write!(f, "exit {code}"),
             Self::Signal { signal } => write!(f, "signal {signal}"),
             Self::SpawnFailed => f.write_str("could not start"),
+            Self::Stopped { signal } => write!(f, "stopped (signal {signal})"),
         }
     }
 }
@@ -124,6 +133,7 @@ mod tests {
             (Outcome::Code { code: 1 }, true),
             (Outcome::Signal { signal: 15 }, true),
             (Outcome::SpawnFailed, true),
+            (Outcome::Stopped { signal: 15 }, false),
         ] {
             let state = RunState::Finished {
                 ended_at: Timestamp(0),

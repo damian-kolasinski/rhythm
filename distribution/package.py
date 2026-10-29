@@ -79,7 +79,7 @@ def archive(binary, output, release_version, target=TARGET):
     members = {
         "rhythm": (executable, 0o755),
         "README.txt": (
-            b"Rhythm\n\nRun rhythm --help or rhythm status.\nInstall versioned, signed releases with mise's packslip backend.\n",
+            b"Rhythm\n\nRun rhythm demo, rhythm status, or rhythm --help.\nInstall versioned, signed releases with mise's packslip backend.\n",
             0o644,
         ),
     }

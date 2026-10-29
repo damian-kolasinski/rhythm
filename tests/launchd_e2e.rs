@@ -40,7 +40,7 @@ impl Agent {
         fs::write(
             &plist,
             format!(
-                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{arguments}</array><key>RunAtLoad</key><true/><key>LimitLoadToSessionType</key><string>{session}</string></dict></plist>"#
+                r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array>{arguments}</array><key>RunAtLoad</key><true/><key>EnvironmentVariables</key><dict><key>RHYTHM_NOTIFY</key><string>off</string></dict><key>LimitLoadToSessionType</key><string>{session}</string></dict></plist>"#
             ),
         )
         .unwrap();
@@ -201,6 +201,8 @@ fn authoring_commands_work_against_real_launchd() {
         &name,
         "--daily",
         "03:15",
+        "--env",
+        "RHYTHM_NOTIFY=off",
         "--",
         "/bin/sh",
         "-c",
@@ -262,4 +264,36 @@ fn authoring_commands_work_against_real_launchd() {
     assert_eq!(fs::read_to_string(&log).unwrap(), "adopted\nadopted\n");
     let (code, _) = rhythm(&["unadopt", &agent.label]);
     assert_eq!(code, Some(0));
+}
+
+#[test]
+#[ignore = "runs the demo, which loads disposable agents into the real user launchd"]
+fn the_demo_tours_real_launchd_and_leaves_nothing_behind() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_rhythm"))
+        .args(["demo", "--fast"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{output:?}");
+    let text = String::from_utf8(output.stdout).unwrap();
+    for expected in [
+        "dev.rhythm.demo-backup finished: exit 0",
+        "dev.rhythm.demo-report finished: exit 1",
+        "com.example.demo-sync now records its runs.",
+        "com.example.demo-sync finished: exit 0",
+        "error: upstream returned 503",
+        "! dev.rhythm.demo-report failed: exit 1",
+        "Demo jobs removed.",
+    ] {
+        assert!(text.contains(expected), "missing {expected:?} in:\n{text}");
+    }
+    let user = unsafe { libc::getuid() };
+    for label in [
+        "dev.rhythm.demo-backup",
+        "dev.rhythm.demo-report",
+        "com.example.demo-sync",
+    ] {
+        for domain in ["gui", "user"] {
+            assert!(!launchctl(&["print", &format!("{domain}/{user}/{label}")]));
+        }
+    }
 }

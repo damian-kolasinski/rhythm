@@ -33,7 +33,11 @@ impl Fixture {
     }
     fn command(&self, args: &[&str]) -> Command {
         let mut command = Command::new(env!("CARGO_BIN_EXE_rhythm"));
-        command.arg("--data-dir").arg(self.state()).args(args);
+        command
+            .arg("--data-dir")
+            .arg(self.state())
+            .args(args)
+            .env("RHYTHM_NOTIFY", "off");
         command
     }
     fn record(&self, extra: &[&str], script: &str) -> Output {
@@ -145,7 +149,8 @@ fn termination_reaches_the_command_and_the_recorder_dies_the_same_way() {
     assert!(matches!(
         f.ledger().latest(LABEL).unwrap().unwrap().state,
         RunState::Finished {
-            outcome: Outcome::Signal { signal: 15 },
+            // Asked to stop: launchd sees the signal, the ledger knows why.
+            outcome: Outcome::Stopped { signal: 15 },
             ..
         }
     ));
@@ -446,4 +451,119 @@ fn logs_return_the_newest_bytes_and_say_so() {
     );
     let logs = f.json(&["logs", LABEL, "--bytes", "5"]);
     assert_eq!(logs["output"], "last\n");
+}
+
+#[test]
+fn notifies_when_a_job_starts_failing_and_when_it_recovers() {
+    let f = Fixture::new();
+    let notices = f.temp.path().join("notices");
+    let notifier = f.temp.path().join("notify");
+    std::fs::write(
+        &notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s | %s\\n' \"$1\" \"$2\" >> '{}'\n",
+            notices.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&notifier, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |code: i32| {
+        f.command(&["run", LABEL, "--", "/bin/sh", "-c", &format!("exit {code}")])
+            .env_remove("RHYTHM_NOTIFY")
+            .env("RHYTHM_NOTIFY_COMMAND", &notifier)
+            .output()
+            .unwrap()
+    };
+    let expected = |lines: &[&str]| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let seen = std::fs::read_to_string(&notices).unwrap_or_default();
+            if seen.lines().collect::<Vec<_>>() == lines {
+                return;
+            }
+            assert!(Instant::now() < deadline, "notices: {seen:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    run(0);
+    run(2);
+    run(2);
+    expected(&["com.example.job failed | exit 2. See rhythm logs com.example.job"]);
+    run(0);
+    run(0);
+    expected(&[
+        "com.example.job failed | exit 2. See rhythm logs com.example.job",
+        "com.example.job recovered | The latest run succeeded.",
+    ]);
+    // Switched off in the job's environment, nothing is delivered.
+    f.command(&["run", LABEL, "--", "/bin/sh", "-c", "exit 4"])
+        .env("RHYTHM_NOTIFY_COMMAND", &notifier)
+        .output()
+        .unwrap();
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(
+        std::fs::read_to_string(&notices).unwrap().lines().count(),
+        2
+    );
+}
+
+#[test]
+fn a_missing_command_notifies_but_a_requested_stop_does_not() {
+    let f = Fixture::new();
+    let notices = f.temp.path().join("notices");
+    let notifier = f.temp.path().join("notify");
+    std::fs::write(
+        &notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n",
+            notices.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&notifier, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let command = |args: &[&str]| {
+        let mut command = f.command(args);
+        command
+            .env_remove("RHYTHM_NOTIFY")
+            .env("RHYTHM_NOTIFY_COMMAND", &notifier);
+        command
+    };
+    // Stopped by launchd while running: not the job's failure.
+    let mut child = command(&[
+        "run",
+        LABEL,
+        "--",
+        "/bin/sh",
+        "-c",
+        "echo started; exec sleep 30",
+    ])
+    .stdout(Stdio::null())
+    .spawn()
+    .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !f
+        .state()
+        .join("runs/1/output.log")
+        .metadata()
+        .is_ok_and(|m| m.len() > 0)
+    {
+        assert!(Instant::now() < deadline, "the command never started");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    unsafe { libc::kill(child.id() as i32, libc::SIGTERM) };
+    child.wait().unwrap();
+    // A command that cannot start is the job's failure.
+    command(&["run", LABEL, "--", "/nonexistent/program"])
+        .output()
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let seen = std::fs::read_to_string(&notices).unwrap_or_default();
+        if !seen.is_empty() {
+            assert_eq!(seen, "com.example.job failed\n");
+            break;
+        }
+        assert!(Instant::now() < deadline, "no notice for a missing command");
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }

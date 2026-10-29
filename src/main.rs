@@ -1,5 +1,8 @@
 use clap::{Parser, Subcommand};
 use rhythm::{
+    attention::{self, AttentionHost, AttentionOutcome, AttentionResponse, Consumer},
+    attention_render,
+    attention_store::AttentionStore,
     authoring::{self, Added, Adoption, Caller, NewJob, OWNED_PREFIX, Recorder},
     history_render,
     jobs::{Label, RunStore},
@@ -15,8 +18,9 @@ use rhythm::{
     runs::Timestamp,
     schedule_input::{self, ScheduleInput},
     state_directory,
-    status::{self, HostOutcome, Target},
+    status::{self, HostOutcome},
     status_render,
+    targets::{self, Target},
 };
 use serde::Serialize;
 use std::{
@@ -56,6 +60,18 @@ enum Commands {
         forward: bool,
         #[arg(last = true, required = true, value_name = "COMMAND")]
         command: Vec<OsString>,
+    },
+    /// List jobs needing attention; with --since-last-seen, only what is new.
+    Attention {
+        /// Only report what changed since this consumer last looked.
+        #[arg(long)]
+        since_last_seen: bool,
+        /// Who is looking, so each agent tool keeps its own place.
+        #[arg(long = "as", default_value = "default", value_name = "NAME")]
+        consumer: String,
+        /// Machine to check: `local` or an ssh destination. Repeat for several.
+        #[arg(long = "host", value_name = "HOST")]
+        hosts: Vec<String>,
     },
     /// Create a launchd job that records its runs, labelled `dev.rhythm.NAME`.
     Add {
@@ -113,6 +129,12 @@ enum Commands {
               value_parser = clap::value_parser!(u64).range(1..=86400))]
         timeout: u64,
     },
+    /// Show Rhythm with disposable synthetic jobs, removed when the demo ends.
+    Demo {
+        /// Skip the pauses between steps.
+        #[arg(long)]
+        fast: bool,
+    },
     #[command(name = "__drain", hide = true)]
     Drain {
         #[arg(long)]
@@ -169,6 +191,11 @@ fn main() -> ExitCode {
     let json = cli.json;
     match cli.command {
         Commands::Status { hosts } => status(json, cli.data_dir, &hosts),
+        Commands::Attention {
+            since_last_seen,
+            consumer,
+            hosts,
+        } => attention(json, cli.data_dir, since_last_seen, &consumer, &hosts),
         Commands::Run {
             label,
             forward,
@@ -315,6 +342,13 @@ fn main() -> ExitCode {
             let code = respond(json, result, kick_render::render);
             if failed { ExitCode::FAILURE } else { code }
         }
+        Commands::Demo { fast } => {
+            let result = this_executable().and_then(|exe| rhythm::demo::run(exe, fast, color()));
+            match result {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => failure(json, error),
+            }
+        }
         Commands::Drain { dir, forward } => {
             recorder::drain(dir, forward);
             ExitCode::SUCCESS
@@ -365,7 +399,7 @@ fn main() -> ExitCode {
 
 fn status(json: bool, data_dir: Option<PathBuf>, hosts: &[String]) -> ExitCode {
     keep_recorder_reachable(data_dir.clone());
-    let targets = match targets(hosts) {
+    let targets = match Target::list(hosts) {
         Ok(targets) => targets,
         Err(error) => return failure(json, error),
     };
@@ -384,6 +418,91 @@ fn status(json: bool, data_dir: Option<PathBuf>, hosts: &[String]) -> ExitCode {
         status_render::render(&response.hosts, Timestamp::now(), color())
     };
     match (write_output(&output), complete) {
+        (ExitCode::SUCCESS, true) => ExitCode::SUCCESS,
+        _ => ExitCode::FAILURE,
+    }
+}
+
+fn attention(
+    json: bool,
+    data_dir: Option<PathBuf>,
+    since_last_seen: bool,
+    consumer: &str,
+    hosts: &[String],
+) -> ExitCode {
+    let (targets, consumer) = match (Target::list(hosts), Consumer::parse(consumer)) {
+        (Ok(targets), Ok(consumer)) => (targets, consumer),
+        (Err(error), _) | (_, Err(error)) => return failure(json, error),
+    };
+    keep_recorder_reachable(data_dir.clone());
+    let local = || {
+        let store = match since_last_seen {
+            true => Some(AttentionStore::open(&state_directory::root(
+                data_dir.clone(),
+            )?)?),
+            false => None,
+        };
+        let previous = store.as_ref().map(|s| s.load(&consumer)).transpose()?;
+        let (items, seen) = attention::look(
+            &Launchd::current_user()?,
+            &ledgers(data_dir.clone()),
+            previous.as_ref(),
+        )?;
+        Ok((items, store.zip(seen)))
+    };
+    let ssh = Ssh::system();
+    let remote = |host: &Host| {
+        let mut args = vec!["attention"];
+        if since_last_seen {
+            args.extend(["--since-last-seen", "--as", consumer.as_str()]);
+        }
+        let response: AttentionResponse = ssh.call(host, &args)?;
+        match response.hosts.into_iter().next().map(|h| h.outcome) {
+            Some(AttentionOutcome::Items { items }) => Ok((items, None)),
+            Some(AttentionOutcome::Failed { error }) => Err(error),
+            None => Err(Error::RemoteIncompatible),
+        }
+    };
+    let mut pending = None;
+    let response = AttentionResponse {
+        hosts: targets::each(&targets, local, remote)
+            .into_iter()
+            .map(|(host, result)| AttentionHost {
+                host,
+                outcome: match result {
+                    Ok((items, seen)) => {
+                        pending = pending.take().or(seen);
+                        AttentionOutcome::Items { items }
+                    }
+                    Err(error) => AttentionOutcome::Failed { error },
+                },
+            })
+            .collect(),
+    };
+    let complete = response
+        .hosts
+        .iter()
+        .all(|h| matches!(h.outcome, AttentionOutcome::Items { .. }));
+    let output = if json {
+        serde_json::to_string_pretty(&response).unwrap() + "\n"
+    } else {
+        match attention_render::render(&response, Timestamp::now()) {
+            // Hooks read silence as "nothing to say"; a person deserves an answer.
+            empty if empty.is_empty() && unsafe { libc::isatty(libc::STDOUT_FILENO) } == 1 => {
+                "Nothing needs attention.\n".to_owned()
+            }
+            text => text,
+        }
+    };
+    let written = write_output(&output);
+    // Marked seen only once delivered, so an interrupted hook loses nothing.
+    if written == ExitCode::SUCCESS
+        && let Some((store, seen)) = pending
+        && store.save(&consumer, &seen).is_err()
+    {
+        return failure(json, Error::StorageUnavailable);
+    }
+    match (written, complete) {
         (ExitCode::SUCCESS, true) => ExitCode::SUCCESS,
         _ => ExitCode::FAILURE,
     }
@@ -450,20 +569,6 @@ fn respond<T: Serialize>(
         Ok(value) => write_output(&text(&value)),
         Err(error) => failure(json, error),
     }
-}
-
-fn targets(hosts: &[String]) -> operation_error::Result<Vec<Target>> {
-    let mut targets: Vec<Target> = vec![];
-    for host in hosts {
-        let target = Target::parse(host)?;
-        if !targets.contains(&target) {
-            targets.push(target);
-        }
-    }
-    if targets.is_empty() {
-        targets.push(Target::Local);
-    }
-    Ok(targets)
 }
 
 fn color() -> bool {

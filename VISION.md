@@ -14,8 +14,10 @@ when a job starts failing. Rhythm makes that work visible without replacing it.
   others over ssh, with jobs needing attention first.
 - **Agent-first.** Noninteractive commands, structured JSON, predictable errors,
   and fixed messages that never echo private values.
-- **Failures reach someone.** Rhythm should tell the operator and the next agent
-  session when background work breaks, instead of waiting to be asked.
+- **Failures reach someone.** A job that starts failing notifies the operator,
+  and the next agent session hears what broke since it last looked.
+- **One way to create jobs.** `rhythm add` and `rhythm adopt` give every job the
+  same label scheme, environment, and run recording.
 
 ## Scope
 

@@ -1,0 +1,5 @@
+Background jobs need attention:
+! com.example.scan failed: exit 7. See `rhythm history com.example.scan`.
+~ dev.rhythm.sync recovered after 1 failed run since last check (run 4). See `rhythm history sync`.
+! devbox: com.example.watch failed: signal 9. Record its runs by running `rhythm adopt com.example.watch` there.
+? laptop: could not check: The host did not answer over ssh.

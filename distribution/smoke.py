@@ -15,7 +15,7 @@ def cli(binary, home, *arguments, ok=True):
         capture_output=True,
         text=True,
         timeout=30,
-        env={**os.environ, "HOME": str(home)},
+        env={**os.environ, "HOME": str(home), "RHYTHM_NOTIFY": "off"},
     )
     if (result.returncode == 0) != ok:
         raise RuntimeError("installed CLI request did not match the expected outcome")
@@ -77,6 +77,7 @@ def verify(binary, release_version, supervised=False):
             ],
             capture_output=True,
             timeout=30,
+            env={**os.environ, "RHYTHM_NOTIFY": "off"},
         )
         if result.returncode != 2 or result.stdout or result.stderr:
             raise RuntimeError("installed recorder did not exit like its command")
@@ -88,6 +89,12 @@ def verify(binary, release_version, supervised=False):
             or logs["output"] != "distributed-run\n"
         ):
             raise RuntimeError("installed recorder did not record the run")
+        first = cli(binary, home, "--data-dir", str(state), "attention", "--since-last-seen")
+        again = cli(binary, home, "--data-dir", str(state), "attention", "--since-last-seen")
+        if [i["label"] for i in first["hosts"][0]["items"]] != ["broken"] or again["hosts"][0][
+            "items"
+        ] != []:
+            raise RuntimeError("installed attention did not report a change once")
         if (
             cli(binary, home, "status", "--host", "-oProxyCommand=x", ok=False)["error"]["code"]
             != "invalid_request"
@@ -132,6 +139,8 @@ def verify(binary, release_version, supervised=False):
                 str(state),
                 "add",
                 name,
+                "--env",
+                "RHYTHM_NOTIFY=off",
                 "--",
                 "/bin/sh",
                 "-c",
@@ -162,6 +171,7 @@ def verify(binary, release_version, supervised=False):
         "cli": True,
         "status": True,
         "recording": True,
+        "attention": True,
         "authoring": supervised,
         "supervision": supervised,
     }
