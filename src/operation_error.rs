@@ -3,6 +3,10 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum Error {
     InvalidRequest,
+    NotFound,
+    StorageUnavailable,
+    InsecureStorage,
+    UnsupportedSchema,
     DefinitionsUnavailable,
     UnsupportedPlatform,
     SupervisorUnavailable,
@@ -14,6 +18,12 @@ impl Error {
     pub fn message(self) -> &'static str {
         match self {
             Self::InvalidRequest => "Invalid command. Run rhythm --help.",
+            Self::NotFound => "No recorded run matches.",
+            Self::StorageUnavailable => "Rhythm's private storage is unavailable.",
+            Self::InsecureStorage => "Rhythm's private storage is accessible to other users.",
+            Self::UnsupportedSchema => {
+                "Rhythm's run ledger was written by an incompatible version."
+            }
             Self::DefinitionsUnavailable => "The LaunchAgents directory cannot be read.",
             Self::UnsupportedPlatform => "This command needs macOS launchd.",
             Self::SupervisorUnavailable => "launchctl did not answer.",

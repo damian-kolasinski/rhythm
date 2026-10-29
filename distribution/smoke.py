@@ -62,6 +62,32 @@ def verify(binary, release_version, supervised=False):
             or jobs["broken"]["health"] != "invalid"
         ):
             raise RuntimeError("installed status did not read definitions")
+        state = home / "state"
+        result = subprocess.run(
+            [
+                str(binary),
+                "--data-dir",
+                str(state),
+                "run",
+                unloaded,
+                "--",
+                "/bin/sh",
+                "-c",
+                "echo distributed-run; exit 2",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
+        if result.returncode != 2 or result.stdout or result.stderr:
+            raise RuntimeError("installed recorder did not exit like its command")
+        runs = cli(binary, home, "--data-dir", str(state), "history", unloaded)["runs"]
+        logs = cli(binary, home, "--data-dir", str(state), "logs", unloaded)
+        if (
+            len(runs) != 1
+            or runs[0]["outcome"] != {"type": "code", "code": 2}
+            or logs["output"] != "distributed-run\n"
+        ):
+            raise RuntimeError("installed recorder did not record the run")
         if (
             cli(binary, home, "status", "--host", "-oProxyCommand=x", ok=False)["error"]["code"]
             != "invalid_request"
@@ -102,6 +128,7 @@ def verify(binary, release_version, supervised=False):
         "version": release_version,
         "cli": True,
         "status": True,
+        "recording": True,
         "supervision": supervised,
     }
 

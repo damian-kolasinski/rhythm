@@ -1,0 +1,7 @@
+  JOB                 SCHEDULE     STATE    LAST
+! com.example.scan    daily 08:07  failing  exit 1, 2h ago
+! com.example.killed  daily 08:07  failing  lost, started 3d ago
+  com.example.sync    daily 08:07  running  pid 4242, for 4m 10s
+  com.example.report  daily 08:07  ok       exit 0, 45s ago
+
+4 jobs, 2 need attention

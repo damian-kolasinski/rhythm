@@ -2,10 +2,13 @@
 use rhythm::{
     jobs::{Activation, Calendar, Exit, Health, Observation, Trigger},
     operation_error::Error,
+    runs::{Outcome, Run, RunState, Timestamp},
     status::{HostOutcome, HostStatus, JobReport},
     status_render::render,
 };
 use std::path::Path;
+
+const NOW: Timestamp = Timestamp(1_790_000_000_000);
 
 fn golden(name: &str, actual: &str) {
     let path = Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/golden/{name}.txt"));
@@ -21,6 +24,8 @@ fn job(label: &str, activation: Option<Activation>, observation: Observation) ->
         health: Health::assess(activation.as_ref(), &observation),
         activation,
         observation,
+        recorded: false,
+        last_run: None,
     }
 }
 
@@ -85,14 +90,14 @@ fn local(jobs: Vec<JobReport>) -> HostStatus {
 
 #[test]
 fn renders_mixed_local_jobs() {
-    golden("status-mixed", &render(&[local(mixed())], false));
+    golden("status-mixed", &render(&[local(mixed())], NOW, false));
 }
 
 #[test]
 fn renders_attention_in_color() {
     golden(
         "status-color",
-        &render(&[local(mixed()[..4].to_vec())], true),
+        &render(&[local(mixed()[..4].to_vec())], NOW, true),
     );
 }
 
@@ -105,7 +110,7 @@ fn renders_empty_and_healthy_machines() {
     )];
     golden(
         "status-quiet",
-        &(render(&[local(vec![])], false) + "---\n" + &render(&[local(healthy)], false)),
+        &(render(&[local(vec![])], NOW, false) + "---\n" + &render(&[local(healthy)], NOW, false)),
     );
 }
 
@@ -135,6 +140,7 @@ fn renders_hosts_as_sections_with_failures_inline() {
                     },
                 },
             ],
+            NOW,
             false,
         ),
     );
@@ -147,7 +153,7 @@ fn renders_terminal_controls_in_labels_as_placeholders() {
         Some(daily(1, 2)),
         loaded(None, Some(Exit::Code { code: 0 })),
     );
-    let output = render(&[local(vec![hostile])], false);
+    let output = render(&[local(vec![hostile])], NOW, false);
     assert!(!output.contains('\x1b') && !output.contains('\x07'));
     assert!(output.contains("com.example.?]52;c;evil?"));
     let spoofed = job(
@@ -155,5 +161,57 @@ fn renders_terminal_controls_in_labels_as_placeholders() {
         Some(daily(1, 2)),
         loaded(None, Some(Exit::Code { code: 0 })),
     );
-    assert!(render(&[local(vec![spoofed])], false).contains("com.example.?gpj.exe"));
+    assert!(render(&[local(vec![spoofed])], NOW, false).contains("com.example.?gpj.exe"));
+}
+
+#[test]
+fn renders_recorded_runs_with_their_timing() {
+    let recorded = |label: &str, observation: Observation, state: RunState, started_ago: i64| {
+        let mut report = job(label, Some(daily(8, 7)), observation);
+        report.recorded = true;
+        report.last_run = Some(Run {
+            id: 1,
+            label: label.into(),
+            started_at: Timestamp(NOW.0 - started_ago),
+            state,
+        });
+        report
+    };
+    let finished = |code, ago| RunState::Finished {
+        ended_at: Timestamp(NOW.0 - ago),
+        outcome: Outcome::Code { code },
+    };
+    golden(
+        "status-recorded",
+        &render(
+            &[local(vec![
+                recorded(
+                    "com.example.scan",
+                    loaded(None, Some(Exit::Code { code: 1 })),
+                    finished(1, 2 * 3_600_000),
+                    2 * 3_600_000 + 4000,
+                ),
+                recorded(
+                    "com.example.killed",
+                    loaded(None, Some(Exit::Signal { signal: 9 })),
+                    RunState::Lost,
+                    3 * 86_400_000,
+                ),
+                recorded(
+                    "com.example.sync",
+                    loaded(Some(4242), Some(Exit::Code { code: 0 })),
+                    RunState::Running,
+                    250_000,
+                ),
+                recorded(
+                    "com.example.report",
+                    loaded(None, Some(Exit::Code { code: 0 })),
+                    finished(0, 45_000),
+                    50_000,
+                ),
+            ])],
+            NOW,
+            false,
+        ),
+    );
 }
