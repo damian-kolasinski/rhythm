@@ -32,11 +32,17 @@ ERROR_CODES = {
 }
 
 
+def read_report(output):
+    # The installer prints its JSON receipt after mise's progress output.
+    report_start = output.rfind(b"\n{") + 1
+    return json.loads(output[report_start:])
+
+
 def failure_reason(stdout, stderr):
     details = []
     for output in [stdout, stderr]:
         try:
-            document = json.loads(output)
+            document = read_report(output)
         except (UnicodeDecodeError, json.JSONDecodeError):
             continue
         if not isinstance(document, dict):
@@ -51,8 +57,10 @@ def failure_reason(stdout, stderr):
     return ", ".join(details)
 
 
-def run(args, env, home, timeout=90):
-    result = subprocess.run(args, cwd=home, env=env, capture_output=True, timeout=timeout)
+def run(args, env, home, timeout=90, stdin=None):
+    result = subprocess.run(
+        args, cwd=home, env=env, input=stdin, capture_output=True, timeout=timeout
+    )
     if result.returncode:
         reason = failure_reason(result.stdout, result.stderr)
         suffix = f" ({reason})" if reason else ""
@@ -111,7 +119,9 @@ def rehearse(archive, installer):
             MISE_YES="1",
         )
         if installer:
-            installed = json.loads(run(["/bin/sh", installer], env, home, timeout=180))
+            installed = read_report(
+                run(["/bin/sh"], env, home, timeout=180, stdin=installer.read_bytes())
+            )
             cli = home / ".local/bin/rhythm"
             verify(home, cli, env, installed, "removed")
         else:
