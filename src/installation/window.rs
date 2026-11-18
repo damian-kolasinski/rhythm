@@ -1,7 +1,10 @@
 use std::{
     fs,
     io::{self, Read, Write},
-    os::unix::net::{UnixListener, UnixStream},
+    os::unix::{
+        fs::PermissionsExt,
+        net::{UnixListener, UnixStream},
+    },
     path::Path,
     process::Command,
     time::{Duration, Instant},
@@ -51,6 +54,7 @@ impl Desktop for MacDesktop {
     fn open(&self, app: &Path, home: &Path) -> Result<()> {
         let scratch = tempfile::Builder::new()
             .prefix("rhythm-ready-")
+            .permissions(fs::Permissions::from_mode(0o700))
             .tempdir_in("/tmp")
             .map_err(|_| Error::WindowUnavailable)?;
         let socket = scratch.path().join("window");
@@ -71,12 +75,8 @@ impl Desktop for MacDesktop {
         let deadline = Instant::now() + Duration::from_secs(15);
         loop {
             match ready.accept() {
-                Ok((mut peer, _)) => {
-                    let mut answer = [0; 5];
-                    peer.set_read_timeout(Some(Duration::from_secs(1)))
-                        .map_err(|_| Error::WindowUnavailable)?;
-                    peer.read_exact(&mut answer)
-                        .map_err(|_| Error::WindowUnavailable)?;
+                Ok((peer, _)) => {
+                    let answer = read_ready(peer).map_err(|_| Error::WindowUnavailable)?;
                     return if &answer == b"ready" {
                         Ok(())
                     } else {
@@ -92,6 +92,16 @@ impl Desktop for MacDesktop {
             }
         }
     }
+}
+
+fn read_ready(mut peer: UnixStream) -> io::Result<[u8; 5]> {
+    let mut answer = [0; 5];
+    // Darwin inherits nonblocking mode from the listener. The read timeout
+    // only waits for the rest of the acknowledgement on a blocking socket.
+    peer.set_nonblocking(false)?;
+    peer.set_read_timeout(Some(Duration::from_secs(1)))?;
+    peer.read_exact(&mut answer)?;
+    Ok(answer)
 }
 
 pub fn acknowledge(socket: &Path) -> Result<()> {
@@ -178,4 +188,24 @@ pub fn running_app(executable: &Path) -> Option<&Path> {
         && child == "rhythm-ui"
         && executable.strip_prefix(app).ok()? == Path::new(EXECUTABLE))
     .then_some(app)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn startup_accepts_an_acknowledgement_sent_after_connecting() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        reader.set_nonblocking(true).unwrap();
+        writer.write_all(b"re").unwrap();
+        let window = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            writer.write_all(b"ady")
+        });
+        let received = read_ready(reader);
+        let sent = window.join().unwrap();
+        assert_eq!(received.unwrap(), *b"ready");
+        sent.unwrap();
+    }
 }
