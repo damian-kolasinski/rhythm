@@ -4,7 +4,13 @@ use std::{
     time::Duration,
 };
 
-use rhythm::{launchd::Launchd, operation_error::Result, runs::Timestamp, status};
+use rhythm::{
+    installation::{Paths, window},
+    launchd::Launchd,
+    operation_error::Result,
+    runs::Timestamp,
+    status,
+};
 use rune::{App, AppSpec, Latest, Tx, Waker};
 
 use crate::{routine::Routine, scenes, theme, view};
@@ -15,6 +21,7 @@ pub struct Window {
     pub failed: bool,
     pub now: Timestamp,
     pub sample: bool,
+    installed: Option<InstalledWindow>,
     reports: Arc<Latest<Result<Vec<Routine>>>>,
     refresh: Option<mpsc::SyncSender<()>>,
 }
@@ -27,6 +34,7 @@ impl Window {
             failed: false,
             now: Timestamp::now(),
             sample: false,
+            installed: InstalledWindow::current(),
             reports: Arc::new(Latest::default()),
             refresh: None,
         }
@@ -75,10 +83,17 @@ fn setup(state: &mut Window, wake: Waker) {
     });
 }
 
-fn poll(state: &mut Window, _: f64, _: &mut Tx) -> bool {
+fn poll(state: &mut Window, _: f64, tx: &mut Tx) -> bool {
     let Some(result) = state.reports.take() else {
         return false;
     };
+    if state
+        .installed
+        .as_ref()
+        .is_some_and(InstalledWindow::removed)
+    {
+        tx.quit();
+    }
     state.apply(result);
     true
 }
@@ -96,17 +111,66 @@ pub fn spec() -> AppSpec<Window> {
 }
 
 pub fn run() {
+    let mut args: Vec<_> = std::env::args().skip(1).collect();
+    if args == ["--version"] {
+        println!("rhythm-ui {}", rhythm::VERSION);
+        return;
+    }
+    let mut ready = None;
+    if args
+        .first()
+        .is_some_and(|arg| arg == window::READY_ARGUMENT)
+    {
+        if args.len() < 2 {
+            std::process::exit(1);
+        }
+        ready = Some(std::path::PathBuf::from(&args[1]));
+        args.drain(..2);
+    }
     if App::new(spec())
         .chrome(rune::Chrome {
             full_size_content: false,
             traffic_lights: None,
             drag_regions: false,
         })
-        .args(std::env::args().skip(1))
+        .args(args)
+        .on_ready(move |_| {
+            if let Some(socket) = ready.take()
+                && window::acknowledge(&socket).is_err()
+            {
+                std::process::exit(1);
+            }
+        })
         .try_run()
         .is_err()
     {
         eprintln!("Rhythm could not open its window.");
         std::process::exit(1);
+    }
+}
+
+struct InstalledWindow {
+    app: std::path::PathBuf,
+    link: std::path::PathBuf,
+    cli: std::path::PathBuf,
+}
+
+impl InstalledWindow {
+    fn current() -> Option<Self> {
+        let exe = std::env::current_exe().ok()?;
+        let app = window::running_app(&exe)?.to_owned();
+        let paths = Paths::current().ok()?;
+        Some(Self {
+            app,
+            cli: paths.cli(),
+            link: paths.link,
+        })
+    }
+
+    fn removed(&self) -> bool {
+        [&self.app, &self.link, &self.cli].iter().all(|path| {
+            std::fs::symlink_metadata(path)
+                .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+        })
     }
 }

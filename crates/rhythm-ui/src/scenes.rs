@@ -7,7 +7,9 @@ use rhythm::{
 
 use crate::app::Window;
 
-pub const SCENES: &[(&str, fn(&mut Window))] = &[
+type Scene = (&'static str, fn(&mut Window));
+
+pub const SCENES: &[Scene] = &[
     ("loading", loading),
     ("empty", empty),
     ("routines", routines),

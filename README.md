@@ -6,6 +6,7 @@ launchd keeps running the jobs; Rhythm makes them visible and predictable.
 
 ```sh
 rhythm demo                      # a two-minute tour with disposable jobs
+rhythm ui                        # open the installed macOS routines window
 rhythm status                    # every user launchd job, attention first
 rhythm status --host devbox      # another machine over ssh
 rhythm add report --daily 08:07 -- /path/to/report   # dev.rhythm.report
@@ -31,8 +32,8 @@ private storage, outside this repository.
 
 ## Install and run
 
-Versioned releases use mise's packslip backend to verify the signed release and
-archive. See [distribution](docs/distribution.md).
+Versioned releases install the CLI and native Mac app from the same signed
+packslip archive. See [distribution](docs/distribution.md).
 
 For development, install the pinned tools in `mise.toml`, then:
 
@@ -51,10 +52,10 @@ success and `1` for any failure, including one unreachable host.
 ```sh
 mise run check
 cargo test --locked
-python distribution/smoke.py --binary target/debug/rhythm --version 0.2.0
+python distribution/smoke.py --binary target/debug/rhythm --version 0.3.0
 # Optional checks that register disposable agents with the real user launchd:
 cargo test --locked --test launchd_e2e -- --ignored
-python distribution/smoke.py --binary target/debug/rhythm --version 0.2.0 --launchd
+python distribution/smoke.py --binary target/debug/rhythm --version 0.3.0 --launchd
 target/debug/rhythm demo
 ```
 

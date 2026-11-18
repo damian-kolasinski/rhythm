@@ -10,6 +10,8 @@ pub mod bounded_command;
 pub mod demo;
 pub mod failure_notice;
 pub mod history_render;
+#[cfg(target_os = "macos")]
+pub mod installation;
 pub mod jobs;
 pub mod kick;
 pub mod kick_render;
@@ -34,3 +36,5 @@ pub mod targets;
 pub mod terminal_text;
 pub mod time_text;
 pub mod wrapper_command;
+
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -41,6 +41,8 @@ def verify(archive, release_version, supervised=False):
                 f"https://rhythm.invalid/v{release_version}",
                 "--bin",
                 "rhythm",
+                "--bin",
+                "rhythm-ui",
                 str(archive),
             ]
         )

@@ -123,11 +123,15 @@ def verify(repository, release_version, commit, supervised=False):
             or not (binary.parent / ".mise-packslip.json").is_file()
         ):
             raise RuntimeError("mise did not install a verified release")
-        if (
-            hashlib.sha256(binary.read_bytes()).digest()
-            != hashlib.sha256(archive_contents.read(archive)["rhythm"]).digest()
-        ):
-            raise RuntimeError("installed bytes differ from verified archive")
+        contents = archive_contents.read(archive)
+        for executable in archive_contents.EXECUTABLES:
+            installed = binary.with_name(executable)
+            if (
+                installed.is_symlink()
+                or hashlib.sha256(installed.read_bytes()).digest()
+                != hashlib.sha256(contents[executable]).digest()
+            ):
+                raise RuntimeError("installed bytes differ from verified archive")
         report = smoke.verify(binary, release_version, supervised)
         return {
             **report,
