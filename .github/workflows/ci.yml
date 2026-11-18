@@ -29,4 +29,4 @@ jobs:
           version: 2026.10.11
           cache: false
       - run: mise run check
-      - run: cargo test --locked
+      - run: cargo test --workspace --locked

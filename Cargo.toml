@@ -1,3 +1,8 @@
+[workspace]
+resolver = "3"
+members = ["crates/rhythm-ui"]
+default-members = ["."]
+
 [package]
 name = "rhythm"
 version = "0.2.0"
@@ -23,3 +28,10 @@ all = "warn"
 
 [profile.release]
 strip = "debuginfo"
+
+# Keep these patches in sync with rune and rune-kit in crates/rhythm-ui.
+[patch.crates-io]
+winit = { git = "https://github.com/anomalyco/rune", rev = "ea6ddf8f2c3cd476a3797caad7d77cbe04641d9c" }
+wgpu-hal = { git = "https://github.com/anomalyco/rune", rev = "ea6ddf8f2c3cd476a3797caad7d77cbe04641d9c" }
+parley_engine = { git = "https://github.com/anomalyco/rune", rev = "ea6ddf8f2c3cd476a3797caad7d77cbe04641d9c" }
+accesskit_windows = { git = "https://github.com/anomalyco/rune", rev = "ea6ddf8f2c3cd476a3797caad7d77cbe04641d9c" }

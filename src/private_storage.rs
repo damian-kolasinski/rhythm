@@ -2,10 +2,7 @@
 use crate::operation_error::{Error, Result};
 use std::{
     fs::{self, File, OpenOptions},
-    os::{
-        fd::AsRawFd,
-        unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
-    },
+    os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
     path::{Path, PathBuf},
 };
 
@@ -78,7 +75,7 @@ pub fn validate_file(f: &File) -> Result<()> {
 }
 #[cfg(target_os = "macos")]
 fn reject_extended_acl(file: &File) -> Result<()> {
-    use std::ffi::c_void;
+    use std::{ffi::c_void, os::fd::AsRawFd};
     unsafe extern "C" {
         fn acl_get_fd_np(fd: i32, kind: u32) -> *mut c_void;
         fn acl_get_entry(acl: *mut c_void, index: i32, entry: *mut *mut c_void) -> i32;

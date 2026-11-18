@@ -7,7 +7,7 @@ use rhythm::{
     attention_store::AttentionStore,
     authoring::{self, Added, Adoption, Caller, NewJob, OWNED_PREFIX, Recorder},
     history_render,
-    jobs::{Label, RunStore},
+    jobs::Label,
     kick::{self, KickResponse},
     kick_render,
     launchd::Launchd,
@@ -399,7 +399,7 @@ fn main() -> ExitCode {
                     &Launchd::current_user()?,
                     &label,
                     wait.then(|| Duration::from_secs(timeout)),
-                    &ledgers(cli.data_dir.clone()),
+                    &status::local_ledgers(cli.data_dir.clone()),
                 )
             });
             let failed =
@@ -471,7 +471,12 @@ fn status(json: bool, data_dir: Option<PathBuf>, hosts: &[String]) -> ExitCode {
     };
     let response = status::gather(
         &targets,
-        || status::jobs(&Launchd::current_user()?, &ledgers(data_dir.clone())),
+        || {
+            status::jobs(
+                &Launchd::current_user()?,
+                &status::local_ledgers(data_dir.clone()),
+            )
+        },
         &Ssh::system(),
     );
     let complete = response
@@ -511,7 +516,7 @@ fn attention(
         let previous = store.as_ref().map(|s| s.load(&consumer)).transpose()?;
         let (items, seen) = attention::look(
             &Launchd::current_user()?,
-            &ledgers(data_dir.clone()),
+            &status::local_ledgers(data_dir.clone()),
             previous.as_ref(),
         )?;
         Ok((items, store.zip(seen)))
@@ -663,7 +668,7 @@ fn session_start(agent: Agent, data_dir: Option<PathBuf>) -> ExitCode {
             let context = session_start::context(
                 agent,
                 &Launchd::current_user()?,
-                &ledgers(data_dir),
+                &status::local_ledgers(data_dir),
                 &store,
                 Timestamp::now(),
             )?;
@@ -694,16 +699,6 @@ fn to_json(value: &serde_json::Value) -> String {
 }
 
 /// Each recorded job's ledger. An unreadable ledger only hides run history.
-fn ledgers(data_dir: Option<PathBuf>) -> impl Fn(&RunStore) -> Option<Ledger> {
-    move |store| {
-        let dir = match store {
-            RunStore::Default => data_dir.clone(),
-            RunStore::Directory(dir) => Some(dir.clone()),
-        };
-        local_ledger(dir).ok().flatten()
-    }
-}
-
 /// Jobs reach the recorder through a stable link to this executable.
 fn recorder_for(data_dir: Option<PathBuf>) -> operation_error::Result<Recorder> {
     let root = state_directory::root(data_dir.clone())?;

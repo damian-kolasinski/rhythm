@@ -116,9 +116,7 @@ impl Launchd {
             Err(_) => Err(Error::DefinitionsUnavailable),
         }
     }
-}
-impl Supervisor for Launchd {
-    fn jobs(&self) -> Result<Vec<Job>> {
+    fn inventory(&self, include: impl Fn(&Job) -> bool) -> Result<Vec<Job>> {
         let mut jobs: Vec<Job> = self
             .definitions()?
             .iter()
@@ -140,6 +138,7 @@ impl Supervisor for Launchd {
                     observation: Observation::Unloaded,
                 })
             })
+            .filter(include)
             .collect();
         for batch in jobs.chunks_mut(PARALLEL) {
             let observations: Vec<Result<Observation>> = std::thread::scope(|scope| {
@@ -157,6 +156,14 @@ impl Supervisor for Launchd {
             }
         }
         Ok(jobs)
+    }
+}
+impl Supervisor for Launchd {
+    fn jobs(&self) -> Result<Vec<Job>> {
+        self.inventory(|_| true)
+    }
+    fn recorded_jobs(&self) -> Result<Vec<Job>> {
+        self.inventory(|job| job.recorded.is_some())
     }
     fn observe(&self, label: &Label) -> Result<Observation> {
         self.observe_label(label.as_str())

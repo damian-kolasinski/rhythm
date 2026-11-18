@@ -12,8 +12,8 @@ run = "cargo build --locked"
 
 [tasks.check]
 run = [
-  "cargo fmt --check",
-  "cargo clippy --locked --all-targets -- -D warnings",
+  "cargo fmt --all --check",
+  "cargo clippy --workspace --locked --all-targets -- -D warnings",
   "actionlint",
   "ruff check distribution",
   "ruff format --check distribution",
@@ -21,7 +21,7 @@ run = [
 ]
 
 [tasks.test]
-run = "cargo test --locked"
+run = "cargo test --workspace --locked"
 
 [tasks."dist:build"]
 run = "python distribution/package.py --build"
