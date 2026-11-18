@@ -5,7 +5,7 @@ use rhythm::{
     status::JobReport,
 };
 
-use crate::app::Window;
+use crate::{app::Window, updates::Offer};
 
 type Scene = (&'static str, fn(&mut Window));
 
@@ -15,6 +15,9 @@ pub const SCENES: &[Scene] = &[
     ("routines", routines),
     ("stale", stale),
     ("unavailable", unavailable),
+    ("release-available", release_available),
+    ("release-offline", release_offline),
+    ("release-failed", release_failed),
 ];
 
 const NOW: Timestamp = Timestamp(2_000_000_000_000);
@@ -39,6 +42,28 @@ fn stale(window: &mut Window) {
 fn unavailable(window: &mut Window) {
     loading(window);
     window.failed = true;
+}
+
+fn release_available(window: &mut Window) {
+    release(window, false);
+}
+
+fn release_offline(window: &mut Window) {
+    release(window, true);
+}
+
+fn release_failed(window: &mut Window) {
+    release(window, false);
+    window.updates.error = Some(rhythm::operation_error::Error::WindowUnavailable);
+}
+
+fn release(window: &mut Window, offline: bool) {
+    routines(window);
+    window.updates.sample = true;
+    window.updates.offer = Some(Offer::Release {
+        version: semver::Version::new(0, 3, 1),
+        offline,
+    });
 }
 
 fn routines(window: &mut Window) {

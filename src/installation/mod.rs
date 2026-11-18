@@ -5,6 +5,7 @@ mod paths;
 mod swap;
 #[cfg(test)]
 mod tests;
+pub mod update;
 pub mod window;
 
 use std::{
@@ -48,6 +49,8 @@ pub enum WindowState {
 pub struct Installed {
     pub version: String,
     pub window: WindowState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_error: Option<Error>,
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +93,8 @@ pub(crate) fn install_locked(
     let has_cli = validate_current(current)?;
     let has_link = validate_link(&paths.link, &cli)?;
     let has_app = window::build(&paths.app)?.is_some();
+    let previous_app = paths.previous_app();
+    let has_previous_app = window::build(&previous_app)?.is_some();
     let packaged_ui = source.with_file_name("rhythm-ui");
     let has_ui = fs::symlink_metadata(&packaged_ui).is_ok_and(|metadata| metadata.is_file());
     if transactional && !has_ui {
@@ -104,21 +109,29 @@ pub(crate) fn install_locked(
     copy_executable(source, &pair.join("rhythm"))?;
     if has_ui {
         copy_executable(&packaged_ui, &pair.join("rhythm-ui"))?;
+        let icon = packaged_ui.with_file_name(window::ICON);
+        if icon.is_file() {
+            fs::write(pair.join(window::ICON), window::released_icon(&icon)?)
+                .map_err(|_| Error::InstallationFailed)?;
+        }
     }
     fs::write(pair.join(RECEIPT), version).map_err(|_| Error::InstallationFailed)?;
     let cli_swap = Swap::new(clock, "current", current.to_owned(), has_cli);
-    let mut state = if !desktop.available() {
+    let graphical = desktop.available();
+    let mut state = if !graphical && !(transactional && has_app) {
         WindowState::BackgroundSession
     } else if !has_ui {
         WindowState::NotIncluded
     } else {
         WindowState::Placed
     };
+    let mut window_error = None;
     let app = if state == WindowState::Placed {
         match stage_app(paths, desktop, &packaged_ui, version, has_app) {
             Ok(app) => Some(app),
-            Err(_) if !transactional => {
+            Err(error) if !transactional => {
                 state = WindowState::Failed;
+                window_error = Some(error);
                 None
             }
             Err(error) => return Err(error),
@@ -153,18 +166,25 @@ pub(crate) fn install_locked(
         if let Some(app) = &app {
             match app.apply() {
                 Ok(()) => app_applied = true,
-                Err(_) if !transactional => state = WindowState::Failed,
+                Err(error) if !transactional => {
+                    state = WindowState::Failed;
+                    window_error = Some(error);
+                }
                 Err(error) => return Err(error),
             }
         }
-        if open && app_applied {
+        finish()?;
+        if open && app_applied && graphical {
             match desktop.open(&paths.app, &paths.home) {
                 Ok(()) => state = WindowState::Opened,
-                Err(_) if !transactional => state = WindowState::Failed,
+                Err(error) if !transactional => {
+                    state = WindowState::Failed;
+                    window_error = Some(error);
+                }
                 Err(error) => return Err(error),
             }
         }
-        finish()
+        Ok(())
     })();
     if let Err(error) = result {
         let app_restored = !app_applied || app.unwrap().restore().is_ok();
@@ -178,9 +198,23 @@ pub(crate) fn install_locked(
             Err(Error::InstallationRollbackFailed)
         };
     }
+    if app_applied
+        && !transactional
+        && has_app
+        && !has_previous_app
+        && state != WindowState::Opened
+        && let Err(error) = app.unwrap().hold_previous(&previous_app)
+    {
+        state = WindowState::Failed;
+        window_error = Some(error);
+    }
+    if state == WindowState::Opened && has_previous_app {
+        let _ = fs::remove_dir_all(previous_app);
+    }
     Ok(Installed {
         version: version.into(),
         window: state,
+        window_error,
     })
 }
 
@@ -206,9 +240,33 @@ fn stage_app(
 pub fn open(paths: &Paths, desktop: &impl Desktop) -> Result<()> {
     let _guard = paths.lock()?;
     if window::build(&paths.app)?.is_none() {
-        return Err(Error::WindowUnavailable);
+        let version = installed_version(paths)?.ok_or(Error::WindowUnavailable)?;
+        let installed =
+            install_locked(paths, desktop, &paths.cli(), &version, true, false, || {
+                Ok(())
+            })?;
+        return if installed.window == WindowState::Opened {
+            Ok(())
+        } else {
+            Err(Error::WindowUnavailable)
+        };
     }
-    desktop.open(&paths.app, &paths.home)
+    let previous = paths.previous_app();
+    let has_previous = window::build(&previous)?.is_some();
+    match desktop.open(&paths.app, &paths.home) {
+        Ok(()) => {
+            if has_previous {
+                let _ = fs::remove_dir_all(previous);
+            }
+            Ok(())
+        }
+        Err(error) if has_previous => {
+            swap::exchange(&previous, &paths.app).map_err(|_| Error::InstallationRollbackFailed)?;
+            let _ = fs::remove_dir_all(previous);
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 pub fn uninstall(
@@ -221,6 +279,8 @@ pub fn uninstall(
     let current = cli.parent().unwrap();
     let installed = validate_current(current)?;
     let app = window::build(&paths.app)?.is_some();
+    let previous_app = paths.previous_app();
+    let has_previous = window::build(&previous_app)?.is_some();
     let mut link_conflict = false;
     let link = match validate_link(&paths.link, &cli) {
         Err(Error::InstallationConflict) => {
@@ -232,8 +292,10 @@ pub fn uninstall(
     let root = Root::open(paths.state.clone())?;
     let recorder = recorder_link::location(&root);
     let own_recorder = fs::read_link(&recorder).is_ok_and(|target| target == cli);
+    let mise_roots = mise::removal_roots(paths, keep_mise);
+    let roots = mise_roots.as_deref().unwrap_or_default();
     let mut routines_released = 0;
-    if installed {
+    if installed || !roots.is_empty() {
         let mut to_release = Vec::new();
         for job in supervisor.recorded_jobs()? {
             let label: Label = job.label.parse()?;
@@ -244,19 +306,24 @@ pub fn uninstall(
             if wrapped.executable == cli
                 || wrapped.executable == paths.link
                 || (own_recorder && wrapped.executable == recorder)
-                || wrapped
-                    .executable
-                    .canonicalize()
-                    .is_ok_and(|resolved| resolved == cli)
+                || wrapped.executable.canonicalize().is_ok_and(|resolved| {
+                    resolved == cli || roots.iter().any(|root| resolved.starts_with(root))
+                })
             {
                 if matches!(job.observation, Observation::Loaded { pid: Some(_), .. }) {
-                    return Err(Error::RestartRequired);
+                    return Err(Error::UninstallDeferred);
                 }
                 to_release.push(label);
             }
         }
         for label in to_release {
-            authoring::release(supervisor, &label, false)?;
+            authoring::release(supervisor, &label, false).map_err(|error| {
+                if error == Error::RestartRequired {
+                    Error::UninstallDeferred
+                } else {
+                    error
+                }
+            })?;
             routines_released += 1;
         }
     }
@@ -269,15 +336,49 @@ pub fn uninstall(
     if app {
         fs::remove_dir_all(&paths.app).map_err(|_| Error::InstallationFailed)?;
     }
+    if has_previous {
+        fs::remove_dir_all(previous_app).map_err(|_| Error::InstallationFailed)?;
+    }
     if installed {
         fs::remove_dir_all(current).map_err(|_| Error::InstallationFailed)?;
+    }
+    update::clear_records(paths)?;
+    let selection = if mise_roots.is_ok() {
+        mise::forget(paths, keep_mise)
+    } else {
+        mise::State::Failed
+    };
+    if matches!(
+        selection,
+        mise::State::Removed { pruned: true, .. } | mise::State::Absent | mise::State::NoMise
+    ) {
+        update::clear_unused_downloads(paths);
     }
     Ok(Uninstalled {
         routines_released,
         link_conflict,
         kept: &["routine_definitions", "recorded_history"],
-        mise: mise::forget(paths, keep_mise),
+        mise: selection,
     })
+}
+
+pub fn installed_version(paths: &Paths) -> Result<Option<String>> {
+    let cli = paths.cli();
+    let current = cli.parent().unwrap();
+    if !validate_current(current)? {
+        return Ok(None);
+    }
+    let receipt = current.join(RECEIPT);
+    if fs::metadata(&receipt)
+        .map_err(|_| Error::InstallationConflict)?
+        .len()
+        > 128
+    {
+        return Err(Error::InstallationConflict);
+    }
+    fs::read_to_string(receipt)
+        .map(Some)
+        .map_err(|_| Error::InstallationConflict)
 }
 
 fn validate_link(link: &Path, cli: &Path) -> Result<bool> {
@@ -303,7 +404,7 @@ fn validate_current(current: &Path) -> Result<bool> {
                 entry.ok().is_none_or(|entry| {
                     !matches!(
                         entry.file_name().to_str(),
-                        Some(RECEIPT | "rhythm" | "rhythm-ui")
+                        Some(RECEIPT | "rhythm" | "rhythm-ui" | window::ICON)
                     )
                 })
             });

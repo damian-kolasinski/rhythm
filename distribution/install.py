@@ -124,12 +124,12 @@ def verify(repository, release_version, commit, supervised=False):
         ):
             raise RuntimeError("mise did not install a verified release")
         contents = archive_contents.read(archive)
-        for executable in archive_contents.EXECUTABLES:
-            installed = binary.with_name(executable)
+        for member in archive_contents.EXECUTABLES | {"Rhythm.icns"}:
+            installed = binary.with_name(member)
             if (
                 installed.is_symlink()
                 or hashlib.sha256(installed.read_bytes()).digest()
-                != hashlib.sha256(contents[executable]).digest()
+                != hashlib.sha256(contents[member]).digest()
             ):
                 raise RuntimeError("installed bytes differ from verified archive")
         report = smoke.verify(binary, release_version, supervised)

@@ -3,7 +3,16 @@
 use std::{fs, io::BufReader, path::Path, process::Command};
 
 const APP: &str = env!("CARGO_BIN_EXE_rhythm-ui");
-const SCENES: &[&str] = &["loading", "empty", "routines", "stale", "unavailable"];
+const SCENES: &[&str] = &[
+    "loading",
+    "empty",
+    "routines",
+    "stale",
+    "unavailable",
+    "release-available",
+    "release-offline",
+    "release-failed",
+];
 
 #[test]
 fn scenes_match_goldens() {
@@ -14,21 +23,39 @@ fn scenes_match_goldens() {
         }
     }
     compare(scratch.path(), "stale", "light", "630x330");
+    compare(scratch.path(), "release-available", "dark", "630x330");
 }
 
 #[test]
 fn refresh_replaces_the_stale_status_in_the_window() {
+    let window = replay("stale", 693, 43, "0.7");
+    assert!(window.contains("Routines refreshed just now"));
+    assert!(!window.contains("Couldn’t refresh routines"));
+}
+
+#[test]
+fn upgrade_button_reports_progress_and_the_new_version_in_the_demo_window() {
+    let progress = replay("release-available", 644, 110, "1.0");
+    assert!(progress.contains("Verifying the signed release…"));
+    let updated = replay("release-available", 644, 110, "3.8");
+    assert!(updated.contains("Rhythm 0.3.1"));
+    assert!(!updated.contains("Upgrade and reopen"));
+}
+
+fn replay(scene: &str, x: u32, y: u32, end: &str) -> String {
     let scratch = tempfile::tempdir().unwrap();
     let script = scratch.path().join("refresh.json");
     let tree = scratch.path().join("window.json");
     fs::write(
         &script,
-        r#"[{"at":0.3,"type":"tap","x":693,"y":43},{"at":0.7,"type":"mark","name":"end"}]"#,
+        format!(
+            r#"[{{"t":0.3,"type":"tap","x":{x},"y":{y}}},{{"t":{end},"type":"mark","name":"end"}}]"#
+        ),
     )
     .unwrap();
     let result = Command::new(APP)
         .args([
-            "--scene", "stale", "--theme", "dark", "--size", "750x462", "--script",
+            "--scene", scene, "--theme", "dark", "--size", "750x462", "--at", end, "--script",
         ])
         .arg(script)
         .arg("--tree")
@@ -36,9 +63,7 @@ fn refresh_replaces_the_stale_status_in_the_window() {
         .output()
         .unwrap();
     assert!(result.status.success());
-    let window = fs::read_to_string(tree).unwrap();
-    assert!(window.contains("Routines refreshed just now"));
-    assert!(!window.contains("Couldn’t refresh routines"));
+    fs::read_to_string(tree).unwrap()
 }
 
 fn compare(scratch: &Path, scene: &str, mode: &str, size: &str) {

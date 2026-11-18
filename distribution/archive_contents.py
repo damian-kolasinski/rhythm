@@ -3,7 +3,7 @@
 import tarfile
 
 EXECUTABLES = {"rhythm", "rhythm-ui"}
-NAMES = EXECUTABLES | {"README.txt"}
+NAMES = EXECUTABLES | {"Rhythm.icns", "README.txt"}
 
 
 def read(archive):

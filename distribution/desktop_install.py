@@ -11,11 +11,54 @@ from pathlib import Path
 
 import archive_contents
 
+WINDOW_STATES = {"opened", "placed", "background_session", "not_included", "failed"}
+ERROR_CODES = {
+    "installation_busy",
+    "installation_conflict",
+    "installation_failed",
+    "installation_rollback_failed",
+    "insecure_storage",
+    "invalid_request",
+    "mise_unavailable",
+    "storage_unavailable",
+    "supervisor_unavailable",
+    "uninstall_deferred",
+    "unsupported_platform",
+    "window_launch_failed",
+    "window_sign_failed",
+    "window_start_failed",
+    "window_start_timeout",
+    "window_unavailable",
+}
+
+
+def failure_reason(stdout, stderr):
+    details = []
+    for output in [stdout, stderr]:
+        try:
+            document = json.loads(output)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(document, dict):
+            continue
+        window = document.get("window")
+        if isinstance(window, str) and window in WINDOW_STATES:
+            details.append(f"window={window}")
+        error = document.get("error")
+        code = error.get("code") if isinstance(error, dict) else document.get("window_error")
+        if isinstance(code, str) and code in ERROR_CODES:
+            details.append(code)
+    return ", ".join(details)
+
 
 def run(args, env, home, timeout=90):
     result = subprocess.run(args, cwd=home, env=env, capture_output=True, timeout=timeout)
     if result.returncode:
-        raise RuntimeError(f"desktop rehearsal command failed with exit {result.returncode}")
+        reason = failure_reason(result.stdout, result.stderr)
+        suffix = f" ({reason})" if reason else ""
+        raise RuntimeError(
+            f"desktop rehearsal command failed with exit {result.returncode}{suffix}"
+        )
     return result.stdout
 
 
@@ -39,7 +82,7 @@ def verify(home, cli, env, installed, expected_mise):
     if run([link, "--version"], env, home).decode().strip() != f"rhythm {installed['version']}":
         raise RuntimeError("the installed CLI does not match the app")
     removed = json.loads(run([cli, "--json", "uninstall"], env, home))
-    if link.exists() or bundle.exists() or removed["mise"]["state"] != expected_mise:
+    if os.path.lexists(link) or bundle.exists() or removed["mise"]["state"] != expected_mise:
         raise RuntimeError("uninstall left a desktop installation behind")
     if expected_mise == "removed" and not removed["mise"]["pruned"]:
         raise RuntimeError("uninstall did not prune the mise release")

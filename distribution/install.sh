@@ -43,8 +43,16 @@ main() {
     --tool-option "identity=https://github.com/$repository/.github/workflows/release.yml@refs/tags/v$selected" \
     --tool-option "issuer=https://token.actions.githubusercontent.com" \
     "$tool@$selected" </dev/null
+  release_dir=$(MISE_YES=1 "$mise" where "$tool@$selected" </dev/null)
+  case "$release_dir" in
+    /*) ;;
+    *) die "mise did not return an absolute release directory." ;;
+  esac
+  verified_cli=$release_dir/rhythm
+  [ -f "$release_dir/.mise-packslip.json" ] && [ -x "$verified_cli" ] && [ ! -L "$verified_cli" ] ||
+    die "mise did not provide a verified Rhythm executable."
   status=0
-  result=$(MISE_YES=1 "$mise" exec -- rhythm --json install --open </dev/null) || status=$?
+  result=$(MISE_YES=1 "$mise" exec -- "$verified_cli" --json install --open </dev/null) || status=$?
   printf '%s\n' "$result"
   case "$result" in
     *'"window":"background_session"'*|*'"window": "background_session"'*) status=0 ;;

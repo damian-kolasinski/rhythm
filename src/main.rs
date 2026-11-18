@@ -103,6 +103,11 @@ impl From<AgentArg> for Agent {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Check and install a newer signed Rhythm release.
+    Update {
+        #[command(subcommand)]
+        command: UpdateCommand,
+    },
     /// Install this release's CLI and native app for the current user.
     Install {
         /// Open the installed app and wait until its window is ready.
@@ -240,6 +245,22 @@ enum Commands {
     },
 }
 
+#[derive(Subcommand)]
+enum UpdateCommand {
+    /// Check for a newer stable release now.
+    Check,
+    /// Show the last update's state.
+    Status,
+    /// Verify and install the available release.
+    Install {
+        /// Open the new window and wait for it before confirming the upgrade.
+        #[arg(long)]
+        open: bool,
+        #[arg(long, hide = true)]
+        expected: Option<String>,
+    },
+}
+
 fn main() -> ExitCode {
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -267,6 +288,43 @@ fn main() -> ExitCode {
     let json = cli.json;
     match cli.command {
         #[cfg(target_os = "macos")]
+        Commands::Update { command } => {
+            use rhythm::installation::{Paths, update, window::MacDesktop};
+            let paths = match Paths::current() {
+                Ok(paths) => paths,
+                Err(error) => return failure(json, error),
+            };
+            match command {
+                UpdateCommand::Check => {
+                    respond(json, update::check(&paths, true), |check| {
+                        match (&check.available, check.offline) {
+                            (Some(version), false) => format!(
+                                "Rhythm {version} is available. Run rhythm update install.\n"
+                            ),
+                            (Some(version), true) => format!(
+                                "Rhythm {version} was available at the last successful check.\n"
+                            ),
+                            (None, false) => "Rhythm is up to date.\n".into(),
+                            (None, true) => "GitHub is unreachable. Try again later.\n".into(),
+                        }
+                    })
+                }
+                UpdateCommand::Status => respond(json, update::progress(&paths), |progress| {
+                    progress.as_ref().map_or_else(
+                        || "No Rhythm update has been started.\n".into(),
+                        |job| format!("Rhythm {} · {}\n", job.version, job.phase.label()),
+                    )
+                }),
+                UpdateCommand::Install { open, expected } => respond(
+                    json,
+                    Launchd::current_user().and_then(|launchd| {
+                        update::install(&paths, &MacDesktop, &launchd, open, expected.as_deref())
+                    }),
+                    |result| format!("Rhythm {} installed.\n", result.version),
+                ),
+            }
+        }
+        #[cfg(target_os = "macos")]
         Commands::Install { open } => {
             use rhythm::installation::{self, Paths, WindowState, window::MacDesktop};
             let installed = Paths::current().and_then(|paths| {
@@ -276,10 +334,15 @@ fn main() -> ExitCode {
                 .as_ref()
                 .is_ok_and(|result| result.window == WindowState::Opened);
             let code = respond(json, installed, |result| {
-                format!(
+                let mut report = format!(
                     "Rhythm {} installed. Desktop window: {:?}.\n",
                     result.version, result.window
-                )
+                );
+                if let Some(error) = result.window_error {
+                    report.push_str(error.message());
+                    report.push('\n');
+                }
+                report
             });
             if open && !opened {
                 ExitCode::FAILURE
@@ -321,9 +384,10 @@ fn main() -> ExitCode {
             if mise_failed { ExitCode::FAILURE } else { code }
         }
         #[cfg(not(target_os = "macos"))]
-        Commands::Install { .. } | Commands::Ui | Commands::Uninstall { .. } => {
-            failure(json, Error::UnsupportedPlatform)
-        }
+        Commands::Install { .. }
+        | Commands::Ui
+        | Commands::Uninstall { .. }
+        | Commands::Update { .. } => failure(json, Error::UnsupportedPlatform),
         Commands::Status { hosts } => status(json, cli.data_dir, &hosts),
         Commands::Attention {
             since_last_seen,
@@ -365,6 +429,7 @@ fn main() -> ExitCode {
             command,
         } => {
             let result = (|| {
+                let _guard = authoring_guard()?;
                 let schedule = schedule_input::schedule(&ScheduleInput {
                     every: every.as_deref(),
                     daily: &daily,
@@ -417,6 +482,7 @@ fn main() -> ExitCode {
         }
         Commands::Adopt { job, restart } => {
             let result = authoring::resolve(&job).and_then(|label| {
+                let _guard = authoring_guard()?;
                 let adoption = authoring::adopt(
                     &Launchd::current_user()?,
                     &recorder_for(cli.data_dir.clone())?,
@@ -775,10 +841,31 @@ fn to_json(value: &serde_json::Value) -> String {
 fn recorder_for(data_dir: Option<PathBuf>) -> operation_error::Result<Recorder> {
     let root = state_directory::root(data_dir.clone())?;
     Ok(Recorder {
-        executable: recorder_link::point(&root, &this_executable()?)?,
+        executable: recorder_link::point(&root, &recorder_executable()?)?,
         data_dir,
         diagnostics: root.path().join("recorder.log"),
     })
+}
+
+fn authoring_guard() -> operation_error::Result<Option<std::fs::File>> {
+    #[cfg(target_os = "macos")]
+    {
+        rhythm::installation::Paths::current()?.lock().map(Some)
+    }
+    #[cfg(not(target_os = "macos"))]
+    Ok(None)
+}
+
+fn recorder_executable() -> operation_error::Result<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        use rhythm::installation::{self, Paths};
+        let paths = Paths::current()?;
+        if installation::installed_version(&paths)?.is_some() {
+            return Ok(paths.cli());
+        }
+    }
+    this_executable()
 }
 
 fn this_executable() -> operation_error::Result<PathBuf> {
@@ -790,8 +877,11 @@ fn this_executable() -> operation_error::Result<PathBuf> {
 /// After an upgrade removed the executable jobs reach the recorder through,
 /// any command run from the new one restores that path.
 fn keep_current(data_dir: Option<PathBuf>) {
-    if let (Ok(Some(root)), Ok(executable)) =
-        (state_directory::existing(data_dir), this_executable())
+    if let Ok(Some(root)) = state_directory::existing(data_dir)
+        && recorder_link::location(&root).is_symlink()
+        && !recorder_link::location(&root).exists()
+        && let Ok(_guard) = authoring_guard()
+        && let Ok(executable) = recorder_executable()
     {
         let _ = recorder_link::repair(&root, &executable);
     }

@@ -51,6 +51,46 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
         .padding(theme::INSET)
         .gap(12.0)
         .child(heading);
+    if let Some(title) = state.updates.title() {
+        let colors = if state.updates.error.is_some() {
+            kit.c.warning
+        } else {
+            kit.c.info
+        };
+        let label = if state.updates.working {
+            "Upgrading…"
+        } else {
+            "Upgrade and reopen"
+        };
+        body = body.child(
+            row()
+                .w_full()
+                .padding(12.0)
+                .gap(12.0)
+                .center_y()
+                .radius(theme::RADIUS)
+                .fill(colors.bg)
+                .child(
+                    col()
+                        .grow(1.0)
+                        .child(text(title).font(theme::strong()).color(colors.fg))
+                        .child(
+                            text(state.updates.message())
+                                .font(theme::secondary())
+                                .color(colors.fg)
+                                .wrap(),
+                        ),
+                )
+                .child(
+                    Button::new(label)
+                        .variant(ButtonVariant::Submit)
+                        .disabled(state.updates.working)
+                        .on_press(Window::upgrade)
+                        .build(&kit)
+                        .key("upgrade"),
+                ),
+        );
+    }
     if state.failed {
         let hint = if state.snapshot.is_some() {
             "Showing the last successful refresh."
@@ -107,10 +147,10 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
                 .px(theme::INSET)
                 .center_y()
                 .fill(kit.c.layer_01)
-                .child(
-                    el().grow(1.0)
-                        .child(quiet(format!("Rhythm {}", env!("CARGO_PKG_VERSION")), &kit)),
-                )
+                .child(el().grow(1.0).child(quiet(
+                    format!("Rhythm {}", state.updates.displayed_version()),
+                    &kit,
+                )))
                 .child(quiet(freshness, &kit)),
         )
 }

@@ -119,9 +119,11 @@ fn conflicts_are_refused_and_window_failures_preserve_the_cli() {
     fs::remove_file(bin).unwrap();
     let mut desktop = TestDesktop::new();
     desktop.sign_ok = false;
+    let failed = install(&f.paths, &desktop, &cli, true).unwrap();
+    assert_eq!(failed.window, WindowState::Failed);
     assert_eq!(
-        install(&f.paths, &desktop, &cli, true).unwrap().window,
-        WindowState::Failed
+        serde_json::to_value(&failed).unwrap()["window_error"],
+        "window_unavailable"
     );
     assert!(f.paths.cli().exists());
     assert!(!f.paths.app.exists());

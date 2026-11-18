@@ -18,6 +18,7 @@ pub const READY_ARGUMENT: &str = "--rhythm-ready";
 const READY_MARKER: &str = "first-frame";
 const IDENTIFIER: &str = "dev.rhythm.desktop";
 const EXECUTABLE: &str = "Contents/MacOS/rhythm-ui";
+pub(super) const ICON: &str = "Rhythm.icns";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Build {
@@ -110,16 +111,19 @@ pub(super) fn write(app: &Path, source: &Path, version: &str) -> Result<()> {
         fs::create_dir_all(app.join(directory)).map_err(|_| Error::InstallationFailed)?;
     }
     super::copy_executable(source, &app.join(EXECUTABLE))?;
-    fs::write(
-        app.join("Contents/Resources/Rhythm.icns"),
-        include_bytes!("../../assets/Rhythm.icns"),
-    )
-    .map_err(|_| Error::InstallationFailed)?;
+    let icon = source.with_file_name(ICON);
+    let bytes = if icon.is_file() {
+        released_icon(&icon)?
+    } else {
+        include_bytes!("../../assets/Rhythm.icns").to_vec()
+    };
+    fs::write(app.join("Contents/Resources").join(ICON), bytes)
+        .map_err(|_| Error::InstallationFailed)?;
     let values: Dictionary = [
         ("CFBundleDevelopmentRegion", "en"),
         ("CFBundleDisplayName", "Rhythm"),
         ("CFBundleExecutable", "rhythm-ui"),
-        ("CFBundleIconFile", "Rhythm.icns"),
+        ("CFBundleIconFile", ICON),
         ("CFBundleIdentifier", IDENTIFIER),
         ("CFBundleName", "Rhythm"),
         ("CFBundlePackageType", "APPL"),
@@ -133,6 +137,18 @@ pub(super) fn write(app: &Path, source: &Path, version: &str) -> Result<()> {
     .collect();
     plist::to_file_xml(app.join("Contents/Info.plist"), &values)
         .map_err(|_| Error::InstallationFailed)
+}
+
+pub(super) fn released_icon(path: &Path) -> Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path).map_err(|_| Error::InstallationFailed)?;
+    if !metadata.is_file() || !(8..=4 * 1024 * 1024).contains(&metadata.len()) {
+        return Err(Error::InstallationFailed);
+    }
+    let bytes = fs::read(path).map_err(|_| Error::InstallationFailed)?;
+    if !bytes.starts_with(b"icns") {
+        return Err(Error::InstallationFailed);
+    }
+    Ok(bytes)
 }
 
 pub fn build(app: &Path) -> Result<Option<Build>> {
