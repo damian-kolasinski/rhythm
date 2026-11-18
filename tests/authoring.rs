@@ -111,7 +111,7 @@ impl Fixture {
             &Caller {
                 home: &home,
                 current_directory: &work,
-                search_path: Some("relative/bin:/usr/bin:/bin"),
+                search_path: Some("relative/bin:/bin:/usr/bin"),
             },
             NewJob {
                 name: name.into(),
