@@ -103,6 +103,20 @@ impl From<AgentArg> for Agent {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Install this release's CLI and native app for the current user.
+    Install {
+        /// Open the installed app and wait until its window is ready.
+        #[arg(long)]
+        open: bool,
+    },
+    /// Open the installed Rhythm window.
+    Ui,
+    /// Remove the CLI and app, keeping routine definitions and recorded history.
+    Uninstall {
+        /// Leave the global mise request and downloaded release in place.
+        #[arg(long)]
+        keep_mise: bool,
+    },
     /// Show every user launchd job, those needing attention first.
     Status {
         /// Machine to inspect: `local` or an ssh destination. Repeat for several.
@@ -252,6 +266,64 @@ fn main() -> ExitCode {
     };
     let json = cli.json;
     match cli.command {
+        #[cfg(target_os = "macos")]
+        Commands::Install { open } => {
+            use rhythm::installation::{self, Paths, WindowState, window::MacDesktop};
+            let installed = Paths::current().and_then(|paths| {
+                installation::install(&paths, &MacDesktop, &this_executable()?, open)
+            });
+            let opened = installed
+                .as_ref()
+                .is_ok_and(|result| result.window == WindowState::Opened);
+            let code = respond(json, installed, |result| {
+                format!(
+                    "Rhythm {} installed. Desktop window: {:?}.\n",
+                    result.version, result.window
+                )
+            });
+            if open && !opened {
+                ExitCode::FAILURE
+            } else {
+                code
+            }
+        }
+        #[cfg(target_os = "macos")]
+        Commands::Ui => {
+            use rhythm::installation::{self, Paths, window::MacDesktop};
+            let opened = Paths::current().and_then(|paths| installation::open(&paths, &MacDesktop));
+            respond(json, opened.map(|_| "opened"), |_| {
+                "Rhythm window opened.\n".into()
+            })
+        }
+        #[cfg(target_os = "macos")]
+        Commands::Uninstall { keep_mise } => {
+            use rhythm::installation::{self, Paths};
+            let removed = Paths::current().and_then(|paths| {
+                installation::uninstall(&paths, &Launchd::current_user()?, keep_mise)
+            });
+            let mise_failed = removed.as_ref().is_ok_and(|result| result.mise.failed());
+            let code = respond(json, removed, |result| {
+                format!(
+                    "Rhythm installation removed. Routines and history kept. mise: {:?}.{}{}\n",
+                    result.mise,
+                    if result.link_conflict {
+                        " An unrelated CLI link was kept."
+                    } else {
+                        ""
+                    },
+                    if result.mise.failed() {
+                        " Run mise unuse --global for the Rhythm packslip request."
+                    } else {
+                        ""
+                    },
+                )
+            });
+            if mise_failed { ExitCode::FAILURE } else { code }
+        }
+        #[cfg(not(target_os = "macos"))]
+        Commands::Install { .. } | Commands::Ui | Commands::Uninstall { .. } => {
+            failure(json, Error::UnsupportedPlatform)
+        }
         Commands::Status { hosts } => status(json, cli.data_dir, &hosts),
         Commands::Attention {
             since_last_seen,

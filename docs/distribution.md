@@ -8,21 +8,20 @@ Source checks still run on macOS and Linux.
 
 ## Install a release
 
-From this repository, with mise installed and GitHub access configured:
+From this repository, with GitHub access configured:
 
 ```sh
 repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
-mise use -g "packslip:github.com/$repository@0.2.0"
+curl -fsSL "https://github.com/$repository/releases/latest/download/install.sh" | sh
 rhythm --version
-rhythm demo
+rhythm ui
 ```
 
-Or replace `OWNER/REPOSITORY` in `mise use -g
-packslip:github.com/OWNER/REPOSITORY@0.2.0` with the repository you trust.
-An exact version avoids ambiguity about which release is installed. A private
-repository needs a GitHub token with read access, such as mise's existing gh
-credential integration or `MISE_GITHUB_TOKEN`. Do not put credentials in
-configuration, URLs, scripts, or review artifacts.
+Each installer selects the exact release it came with. Set `RHYTHM_VERSION`
+for a specific release with a desktop companion. The installer finds or sets
+up mise, pins the release globally, verifies it with packslip and opens the
+window. The CLI link is in `~/.local/bin`. The installer prints a PATH hint
+if needed and leaves shell configuration alone.
 
 The packslip backend verifies the repository identity, signed manifest, requested
 version, artifact digest and size before extracting anything. Its first install
@@ -31,8 +30,18 @@ records the signer; later installations enforce continuity. Use a project
 environments. A failed verification is a failed install: do not replace the
 `packslip:` backend with an unverified download or a local build.
 
-The archive contains the executable at its root and a short README. A source
-checkout and the packslip CLI are not runtime dependencies.
+The archive contains `rhythm`, `rhythm-ui`, and a short README at its root.
+The installed CLI and Finder app are placed per user. Run `rhythm install
+--open` to place both again from the selected packslip release and confirm the
+window has rendered. With no desktop session the CLI remains available. Run
+`rhythm ui` later to open the placed app.
+
+`rhythm uninstall` removes the CLI link, its executables and the app. An open
+window closes. Routine definitions and run history are kept. A routine using
+the installed recorder is returned to its original command before the
+recorder is removed. If a dependent routine is running, retry after it exits.
+The global mise request and unused release files are removed unless you pass
+`--keep-mise`.
 
 ## Development tasks
 
@@ -76,13 +85,15 @@ source CI without publishing. For a release tag, the Release workflow:
 3. Signs a disposable candidate with an unlogged temporary test key. It verifies
    the archive, rejects a modified file and a different signer, extracts into a
    temporary installation, and runs real CLI flows
-   using that exact executable.
+   using those exact executables. It opens and uninstalls the signed app in a
+   scratch user directory on the macOS runner.
 4. Signs the built archive with packslip using the signing job's GitHub OIDC
    identity. Keyless signatures are logged. The signing job has no repository
    write permission. Public repositories also request GitHub build attestations;
    private repositories skip that separate Enterprise-only service while keeping
    packslip signature and artifact verification mandatory.
-5. Publishes the archive and `packslip.sigstore.json` together under `vVERSION`
+5. Publishes the archive, `packslip.sigstore.json`, and the stamped
+   `install.sh` together under `vVERSION`
    using a separate job with repository write permission and no OIDC permission.
    Publishing requires the existing tag (`--verify-tag`). Existing releases and
    assets are never overwritten; trying to publish the same tag again fails.
@@ -90,7 +101,8 @@ source CI without publishing. For a release tag, the Release workflow:
 6. Downloads the published files, verifies the expected signing workflow and
    source commit, installs the exact version through mise in fresh isolated
    directories, compares the installed executable with the verified archive,
-   and repeats the CLI checks.
+   and repeats the CLI checks. It also runs the published installer and verifies
+   desktop launch and uninstall.
 
 Pull requests run the candidate build and tests without production signing,
 creating tags, or publishing releases. Release builds use fresh runners and no
@@ -100,16 +112,16 @@ boundaries and publishing every asset in one command follow Mergegate’s workfl
 
 To release, first merge the distribution workflow and the intended Cargo version
 through review. Fetch the reviewed target, inspect the commit, then create the
-version tag through GitHub. For version 0.2.0:
+version tag through GitHub. For version 0.3.0:
 
 ```sh
 git fetch mergegate
 repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 commit=$(git rev-parse mergegate/main)
-# Confirm this reviewed commit's Cargo version is 0.2.0 before tagging.
+# Confirm this reviewed commit's Cargo version is 0.3.0 before tagging.
 git show "$commit:Cargo.toml"
 gh api "repos/$repository/git/refs" --method POST \
-  -f ref=refs/tags/v0.2.0 -f sha="$commit"
+  -f ref=refs/tags/v0.3.0 -f sha="$commit"
 ```
 
 A tag is the explicit release action; it never advances a branch. Do not move or
@@ -134,7 +146,7 @@ mise selection or the normal Rhythm state directory:
 repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 commit=$(git rev-parse HEAD)
 mise exec -- python distribution/install.py \
-  --repository "$repository" --version 0.2.0 --commit "$commit"
+  --repository "$repository" --version 0.3.0 --commit "$commit"
 ```
 
 Run this at the release commit, or supply that commit explicitly. The expected

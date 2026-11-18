@@ -1,8 +1,9 @@
-"""The release archive contract: fixed regular files, with one root executable."""
+"""The release archive contract: fixed regular files with both root executables."""
 
 import tarfile
 
-NAMES = {"rhythm", "README.txt"}
+EXECUTABLES = {"rhythm", "rhythm-ui"}
+NAMES = EXECUTABLES | {"README.txt"}
 
 
 def read(archive):
@@ -26,5 +27,5 @@ def extract(archive, directory):
         path = directory / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
-        path.chmod(0o755 if name == "rhythm" else 0o644)
+        path.chmod(0o755 if name in EXECUTABLES else 0o644)
     return directory / "rhythm"

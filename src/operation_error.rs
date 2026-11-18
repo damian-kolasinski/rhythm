@@ -24,6 +24,16 @@ pub enum Error {
     SupervisorUnavailable,
     RemoteUnavailable,
     RemoteIncompatible,
+    InstallationConflict,
+    InstallationBusy,
+    InstallationFailed,
+    InstallationRollbackFailed,
+    WindowUnavailable,
+    WindowSignFailed,
+    WindowLaunchFailed,
+    WindowStartFailed,
+    WindowStartTimeout,
+    MiseUnavailable,
 }
 impl Error {
     /// A fixed explanation that never echoes paths, values, or OS diagnostics.
@@ -61,6 +71,20 @@ impl Error {
             Self::RemoteIncompatible => {
                 "Rhythm on the host is missing or incompatible with this version."
             }
+            Self::InstallationConflict => {
+                "A path required by Rhythm is occupied by an unrelated or unsafe file."
+            }
+            Self::InstallationBusy => "Another Rhythm installation operation is in progress.",
+            Self::InstallationFailed => "Rhythm could not change its installation.",
+            Self::InstallationRollbackFailed => {
+                "Rhythm could not restore its installation. The previous files were kept in a staging directory."
+            }
+            Self::WindowUnavailable => "Rhythm could not open a ready desktop window.",
+            Self::WindowSignFailed => "macOS could not sign the staged Rhythm app.",
+            Self::WindowLaunchFailed => "LaunchServices could not launch the Rhythm app.",
+            Self::WindowStartFailed => "Rhythm could not confirm that the new window was ready.",
+            Self::WindowStartTimeout => "Rhythm's new window did not draw its first frame in time.",
+            Self::MiseUnavailable => "Rhythm could not make the requested mise change.",
         }
     }
 }

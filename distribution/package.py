@@ -54,7 +54,7 @@ def build(root=ROOT, target=TARGET):
     )
     env["MACOSX_DEPLOYMENT_TARGET"] = "13.0"
     subprocess.run(
-        ["cargo", "build", "--locked", "--release", "--target", target],
+        ["cargo", "build", "--workspace", "--locked", "--release", "--target", target],
         cwd=root,
         env=env,
         check=True,
@@ -64,25 +64,25 @@ def build(root=ROOT, target=TARGET):
 
 def archive(binary, output, release_version, target=TARGET):
     name = filename(release_version, target)
-    if binary.is_symlink() or not binary.is_file() or not os.access(binary, os.X_OK):
-        raise ValueError("release executable unavailable")
-    binary = binary.resolve(strict=True)
-    if (
-        subprocess.check_output([str(binary), "--version"], text=True).strip()
-        != f"rhythm {release_version}"
-    ):
-        raise ValueError("release version mismatch")
-    executable = binary.read_bytes()
-    if str(Path.home()).encode() in executable:
-        raise ValueError("release executable contains a private build path")
+    members = {}
+    for executable in ("rhythm", "rhythm-ui"):
+        source = binary if executable == "rhythm" else binary.with_name(executable)
+        if source.is_symlink() or not source.is_file() or not os.access(source, os.X_OK):
+            raise ValueError("release executable unavailable")
+        source = source.resolve(strict=True)
+        if subprocess.check_output([str(source), "--version"], text=True).strip() != (
+            f"{executable} {release_version}"
+        ):
+            raise ValueError("release version mismatch")
+        contents = source.read_bytes()
+        if str(Path.home()).encode() in contents:
+            raise ValueError("release executable contains a private build path")
+        members[executable] = (contents, 0o755)
     output.mkdir(parents=True, exist_ok=True)
-    members = {
-        "rhythm": (executable, 0o755),
-        "README.txt": (
-            b"Rhythm\n\nRun rhythm demo, rhythm status, or rhythm --help.\nInstall versioned, signed releases with mise's packslip backend.\n",
-            0o644,
-        ),
-    }
+    members["README.txt"] = (
+        b"Rhythm\n\nUse the signed release installer or run rhythm install --open.\nRun rhythm status or rhythm --help for the CLI.\n",
+        0o644,
+    )
     path = output / name
     with (
         path.open("wb") as raw,

@@ -12,6 +12,8 @@ on:
       - Cargo.toml
       - Cargo.lock
       - src/**
+      - assets/**
+      - crates/rhythm-ui/**
       # Embedded in the binary as the agent guide.
       - skill/**
       - docs/**
@@ -47,10 +49,37 @@ jobs:
         if: github.ref_type == 'tag'
         run: git merge-base --is-ancestor "$GITHUB_SHA" origin/main
 
-  build:
+  tested:
     needs: version
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Require successful main CI for the tagged commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for _attempt in $(seq 1 60); do
+            result=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yml --branch main \
+              --commit "$GITHUB_SHA" --event push --limit 1 --json conclusion --jq '.[0].conclusion // ""')
+            case "$result" in
+              success) exit 0 ;;
+              '') sleep 10 ;;
+              *) printf 'Main CI concluded %s for this release commit.\n' "$result" >&2; exit 1 ;;
+            esac
+          done
+          printf 'Main CI has not finished for this release commit.\n' >&2
+          exit 1
+
+  build:
+    needs: [version, tested]
+    if: always() && needs.version.result == 'success' && (needs.tested.result == 'success' || needs.tested.result == 'skipped')
     # Ship only the native target verified by this job; never cross-compile an untested release.
     runs-on: macos-15
+    env:
+      RHYTHM_RELEASE_REPOSITORY: ${{ github.repository }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -60,14 +89,22 @@ jobs:
           version: 2026.10.11
           cache: false
       - run: mise run check
-      - run: cargo test --locked
+      - run: cargo test --workspace --locked
       - run: mise run dist:build
       - name: Verify the packaged candidate's installed flows
         run: mise run dist:rehearse
+      - name: Open and uninstall the packaged desktop app
+        run: mise exec -- python distribution/desktop_install.py --archive dist/rhythm-*.tar.gz
+      - name: Stamp the release installer
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+        run: mise exec -- python distribution/stamp_installer.py --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" --out dist/install.sh
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: rhythm-aarch64-apple-darwin
-          path: dist/rhythm-*.tar.gz
+          path: |
+            dist/rhythm-*.tar.gz
+            dist/install.sh
           if-no-files-found: error
 
   sign:
@@ -88,7 +125,7 @@ jobs:
         uses: jdx/packslip@3a4afb16b29d3ac639fcd35cbe99124184f71859 # v1.11.1
         with:
           artifacts: dist/rhythm-*.tar.gz
-          bin: rhythm
+          bin: rhythm rhythm-ui
           tag: ${{ needs.version.outputs.tag }}
           version: ${{ needs.version.outputs.version }}
           commit: ${{ github.sha }}
@@ -122,8 +159,8 @@ jobs:
           gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
             --verify-tag --title "$RELEASE_TAG" \
             --prerelease="$RELEASE_PRERELEASE" \
-            --notes "Signed Rhythm release. Install this exact version through mise's packslip backend." \
-            dist/rhythm-*.tar.gz dist/packslip.sigstore.json
+            --notes "Signed Rhythm CLI and macOS app. Download install.sh to install both." \
+            dist/rhythm-*.tar.gz dist/packslip.sigstore.json dist/install.sh
 
   verify-published:
     needs: [version, publish]
@@ -142,4 +179,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
-        run: python distribution/install.py --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" --commit "$GITHUB_SHA"
+        run: |
+          python distribution/install.py --repository "$GITHUB_REPOSITORY" --version "$RELEASE_VERSION" --commit "$GITHUB_SHA"
+          scratch=$(mktemp -d)
+          trap 'rm -rf "$scratch"' EXIT
+          gh release download "v$RELEASE_VERSION" --repo "$GITHUB_REPOSITORY" --pattern install.sh --dir "$scratch"
+          python distribution/desktop_install.py --installer "$scratch/install.sh"

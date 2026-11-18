@@ -9,13 +9,19 @@ import package
 
 
 class Packaging(unittest.TestCase):
-    def test_archive_has_stable_metadata_and_root_executable(self):
+    def test_archive_has_stable_metadata_and_both_executables(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             binary = root / "rhythm"
             binary.write_bytes(b"synthetic release executable")
             binary.chmod(0o755)
-            with patch("package.subprocess.check_output", return_value="rhythm 1.2.3\n"):
+            window = root / "rhythm-ui"
+            window.write_bytes(b"synthetic companion")
+            window.chmod(0o755)
+            with patch(
+                "package.subprocess.check_output",
+                side_effect=lambda args, **_: f"{Path(args[0]).name} 1.2.3\n",
+            ):
                 first = package.archive(binary, root / "one", "1.2.3")
                 second = package.archive(binary, root / "two", "1.2.3")
             self.assertEqual(
@@ -25,14 +31,28 @@ class Packaging(unittest.TestCase):
             with tarfile.open(first) as archive:
                 self.assertEqual(
                     archive.getnames(),
-                    ["rhythm", "README.txt"],
+                    ["rhythm", "rhythm-ui", "README.txt"],
                 )
                 for member in archive:
                     self.assertTrue(member.isfile())
                     self.assertEqual((member.uid, member.gid, member.mtime), (0, 0, 0))
                     self.assertEqual((member.uname, member.gname), ("", ""))
                 self.assertEqual(archive.getmember("rhythm").mode, 0o755)
+                self.assertEqual(archive.getmember("rhythm-ui").mode, 0o755)
                 self.assertEqual(archive.extractfile("rhythm").read(), binary.read_bytes())
+                self.assertEqual(archive.extractfile("rhythm-ui").read(), window.read_bytes())
+
+    def test_missing_or_mismatched_companion_is_refused(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "rhythm"
+            binary.touch(mode=0o755)
+            with patch("package.subprocess.check_output", return_value="rhythm 1.2.3\n"):
+                with self.assertRaises(ValueError):
+                    package.archive(binary, root / "out", "1.2.3")
+                root.joinpath("rhythm-ui").touch(mode=0o755)
+                with self.assertRaises(ValueError):
+                    package.archive(binary, root / "out", "1.2.3")
 
     def test_invalid_versions_and_targets_cannot_become_paths(self):
         for value in ["../sample", "1.2", "1.2.3\n", "01.2.3", "1.2.3-01"]:
