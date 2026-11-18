@@ -161,6 +161,42 @@ fn reports_every_defined_job_most_urgent_first() {
 }
 
 #[test]
+fn desktop_inventory_only_observes_jobs_using_the_rhythm_recorder() {
+    let fixture = Fixture::new();
+    for label in ["dev.rhythm.sample", "com.example.adopted"] {
+        fixture.define(
+            &format!("{label}.plist"),
+            label,
+            &format!("<key>ProgramArguments</key><array><string>/example/bin/rhythm</string><string>run</string><string>{label}</string><string>--</string><string>/bin/true</string></array>"),
+        );
+    }
+    fixture.define("ordinary.plist", "com.example.ordinary", "");
+    fixture.observe(
+        "gui",
+        "dev.rhythm.sample",
+        "\truns = 1\n\tlast exit code = 3\n",
+    );
+    fixture.observe(
+        "gui",
+        "com.example.adopted",
+        "\truns = 1\n\tlast exit code = 0\n",
+    );
+    let reports = status::routines(&fixture.launchd()).unwrap();
+    assert_eq!(
+        reports
+            .iter()
+            .map(|report| (report.label.as_str(), report.health))
+            .collect::<Vec<_>>(),
+        [
+            ("dev.rhythm.sample", Health::Failing),
+            ("com.example.adopted", Health::Ok)
+        ]
+    );
+    let calls = fs::read_to_string(fixture.path().join("launchctl-calls")).unwrap();
+    assert!(!calls.contains("com.example.ordinary"));
+}
+
+#[test]
 fn json_contract_round_trips_for_remote_hosts() {
     let f = Fixture::new();
     f.define("a.plist", "com.example.a", "<key>RunAtLoad</key><true/>");

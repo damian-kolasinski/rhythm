@@ -83,6 +83,14 @@ pub struct Program {
 /// The platform service that starts and restarts the operator's jobs.
 pub trait Supervisor {
     fn jobs(&self) -> Result<Vec<Job>>;
+    /// Jobs whose definitions still run through Rhythm's recorder.
+    fn recorded_jobs(&self) -> Result<Vec<Job>> {
+        Ok(self
+            .jobs()?
+            .into_iter()
+            .filter(|job| job.recorded.is_some())
+            .collect())
+    }
     fn observe(&self, label: &Label) -> Result<Observation>;
     fn program(&self, label: &Label) -> Result<Program>;
     /// Creates and loads a job whose label is not defined or loaded yet.

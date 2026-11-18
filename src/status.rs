@@ -8,7 +8,7 @@ use crate::{
     targets::{self, Target},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, path::PathBuf};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JobReport {
@@ -77,9 +77,32 @@ pub fn jobs(
     supervisor: &impl Supervisor,
     ledgers: &dyn Fn(&RunStore) -> Option<Ledger>,
 ) -> Result<Vec<JobReport>> {
+    reports(supervisor.jobs()?, ledgers)
+}
+
+/// The local desktop inventory shares the CLI's interpretation of jobs and runs.
+pub fn routines(supervisor: &impl Supervisor) -> Result<Vec<JobReport>> {
+    reports(supervisor.recorded_jobs()?, &local_ledgers(None))
+}
+
+pub fn local_ledgers(data_dir: Option<PathBuf>) -> impl Fn(&RunStore) -> Option<Ledger> {
+    move |store| {
+        let dir = match store {
+            RunStore::Default => data_dir.clone(),
+            RunStore::Directory(dir) => Some(dir.clone()),
+        };
+        let root = crate::state_directory::existing(dir).ok().flatten()?;
+        Ledger::open_existing(root).ok().flatten()
+    }
+}
+
+fn reports(
+    jobs: Vec<Job>,
+    ledgers: &dyn Fn(&RunStore) -> Option<Ledger>,
+) -> Result<Vec<JobReport>> {
     let mut opened: HashMap<RunStore, Option<Ledger>> = HashMap::new();
     let mut reports = vec![];
-    for job in supervisor.jobs()? {
+    for job in jobs {
         let last_run = match &job.recorded {
             Some(store) => {
                 let ledger = opened
