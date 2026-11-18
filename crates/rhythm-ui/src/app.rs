@@ -134,9 +134,9 @@ pub fn run() {
             drag_regions: false,
         })
         .args(args)
-        .on_ready(move |_| {
-            if let Some(socket) = ready.take()
-                && window::acknowledge(&socket).is_err()
+        .on_frame_drawn(move |_| {
+            if let Some(directory) = ready.take()
+                && window::acknowledge(&directory).is_err()
             {
                 std::process::exit(1);
             }

@@ -1,10 +1,6 @@
 use std::{
-    fs,
-    io::{self, Read, Write},
-    os::unix::{
-        fs::PermissionsExt,
-        net::{UnixListener, UnixStream},
-    },
+    fs, io,
+    os::unix::fs::PermissionsExt,
     path::Path,
     process::Command,
     time::{Duration, Instant},
@@ -19,6 +15,7 @@ use crate::{
 };
 
 pub const READY_ARGUMENT: &str = "--rhythm-ready";
+const READY_MARKER: &str = "first-frame";
 const IDENTIFIER: &str = "dev.rhythm.desktop";
 const EXECUTABLE: &str = "Contents/MacOS/rhythm-ui";
 
@@ -48,20 +45,16 @@ impl Desktop for MacDesktop {
     fn sign(&self, stage: &Path) -> Result<()> {
         let mut command = Command::new("/usr/bin/codesign");
         command.args(["--force", "--sign", "-"]).arg(stage);
-        checked(command, Duration::from_secs(30), Error::WindowUnavailable)
+        checked(command, Duration::from_secs(30), Error::WindowSignFailed)
     }
 
     fn open(&self, app: &Path, home: &Path) -> Result<()> {
+        let applications = app.parent().ok_or(Error::WindowStartFailed)?;
         let scratch = tempfile::Builder::new()
-            .prefix("rhythm-ready-")
+            .prefix(".rhythm-ready-")
             .permissions(fs::Permissions::from_mode(0o700))
-            .tempdir_in("/tmp")
-            .map_err(|_| Error::WindowUnavailable)?;
-        let socket = scratch.path().join("window");
-        let ready = UnixListener::bind(&socket).map_err(|_| Error::WindowUnavailable)?;
-        ready
-            .set_nonblocking(true)
-            .map_err(|_| Error::WindowUnavailable)?;
+            .tempdir_in(applications)
+            .map_err(|_| Error::WindowStartFailed)?;
         let mut home_env = std::ffi::OsString::from("HOME=");
         home_env.push(home);
         let mut command = Command::new("/usr/bin/open");
@@ -70,43 +63,35 @@ impl Desktop for MacDesktop {
             .arg(home_env)
             .arg(app)
             .args(["--args", READY_ARGUMENT])
-            .arg(&socket);
-        checked(command, Duration::from_secs(10), Error::WindowUnavailable)?;
-        let deadline = Instant::now() + Duration::from_secs(15);
-        loop {
-            match ready.accept() {
-                Ok((peer, _)) => {
-                    let answer = read_ready(peer).map_err(|_| Error::WindowUnavailable)?;
-                    return if &answer == b"ready" {
-                        Ok(())
-                    } else {
-                        Err(Error::WindowUnavailable)
-                    };
+            .arg(scratch.path());
+        checked(command, Duration::from_secs(10), Error::WindowLaunchFailed)?;
+        wait_for_frame(scratch.path(), Duration::from_secs(15))
+    }
+}
+
+fn wait_for_frame(directory: &Path, timeout: Duration) -> Result<()> {
+    let marker = directory.join(READY_MARKER);
+    let deadline = Instant::now() + timeout;
+    loop {
+        match fs::symlink_metadata(&marker) {
+            Ok(metadata) if metadata.is_file() => return Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(Error::WindowStartTimeout);
                 }
-                Err(error)
-                    if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-                {
-                    std::thread::sleep(Duration::from_millis(30));
-                }
-                Err(_) => return Err(Error::WindowUnavailable),
+                std::thread::sleep(remaining.min(Duration::from_millis(30)));
             }
+            _ => return Err(Error::WindowStartFailed),
         }
     }
 }
 
-fn read_ready(mut peer: UnixStream) -> io::Result<[u8; 5]> {
-    let mut answer = [0; 5];
-    // Darwin inherits nonblocking mode from the listener. The read timeout
-    // only waits for the rest of the acknowledgement on a blocking socket.
-    peer.set_nonblocking(false)?;
-    peer.set_read_timeout(Some(Duration::from_secs(1)))?;
-    peer.read_exact(&mut answer)?;
-    Ok(answer)
-}
-
-pub fn acknowledge(socket: &Path) -> Result<()> {
-    UnixStream::connect(socket)
-        .and_then(|mut stream| stream.write_all(b"ready"))
+pub fn acknowledge(directory: &Path) -> Result<()> {
+    // The installer owns the private directory. Creating the marker atomically
+    // lets the first-frame signal survive until the installer observes it.
+    fs::File::create_new(directory.join(READY_MARKER))
+        .map(|_| ())
         .map_err(|_| Error::WindowUnavailable)
 }
 
@@ -195,17 +180,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn startup_accepts_an_acknowledgement_sent_after_connecting() {
-        let (reader, mut writer) = UnixStream::pair().unwrap();
-        reader.set_nonblocking(true).unwrap();
-        writer.write_all(b"re").unwrap();
-        let window = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(100));
-            writer.write_all(b"ady")
-        });
-        let received = read_ready(reader);
-        let sent = window.join().unwrap();
-        assert_eq!(received.unwrap(), *b"ready");
-        sent.unwrap();
+    fn startup_requires_a_frame_acknowledgement_from_this_launch() {
+        let scratch = tempfile::tempdir().unwrap();
+        let first = scratch.path().join("a".repeat(110));
+        let second = scratch.path().join("second");
+        fs::create_dir(&first).unwrap();
+        fs::create_dir(&second).unwrap();
+
+        acknowledge(&first).unwrap();
+        assert_eq!(wait_for_frame(&first, Duration::ZERO), Ok(()));
+        assert_eq!(
+            wait_for_frame(&second, Duration::ZERO),
+            Err(Error::WindowStartTimeout)
+        );
     }
 }

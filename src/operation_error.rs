@@ -29,6 +29,10 @@ pub enum Error {
     InstallationFailed,
     InstallationRollbackFailed,
     WindowUnavailable,
+    WindowSignFailed,
+    WindowLaunchFailed,
+    WindowStartFailed,
+    WindowStartTimeout,
     MiseUnavailable,
 }
 impl Error {
@@ -76,6 +80,10 @@ impl Error {
                 "Rhythm could not restore its installation. The previous files were kept in a staging directory."
             }
             Self::WindowUnavailable => "Rhythm could not open a ready desktop window.",
+            Self::WindowSignFailed => "macOS could not sign the staged Rhythm app.",
+            Self::WindowLaunchFailed => "LaunchServices could not launch the Rhythm app.",
+            Self::WindowStartFailed => "Rhythm could not confirm that the new window was ready.",
+            Self::WindowStartTimeout => "Rhythm's new window did not draw its first frame in time.",
             Self::MiseUnavailable => "Rhythm could not make the requested mise change.",
         }
     }
