@@ -49,6 +49,8 @@ pub enum WindowState {
 pub struct Installed {
     pub version: String,
     pub window: WindowState,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub window_error: Option<Error>,
 }
 
 #[derive(Debug, Serialize)]
@@ -123,11 +125,13 @@ pub(crate) fn install_locked(
     } else {
         WindowState::Placed
     };
+    let mut window_error = None;
     let app = if state == WindowState::Placed {
         match stage_app(paths, desktop, &packaged_ui, version, has_app) {
             Ok(app) => Some(app),
-            Err(_) if !transactional => {
+            Err(error) if !transactional => {
                 state = WindowState::Failed;
+                window_error = Some(error);
                 None
             }
             Err(error) => return Err(error),
@@ -162,7 +166,10 @@ pub(crate) fn install_locked(
         if let Some(app) = &app {
             match app.apply() {
                 Ok(()) => app_applied = true,
-                Err(_) if !transactional => state = WindowState::Failed,
+                Err(error) if !transactional => {
+                    state = WindowState::Failed;
+                    window_error = Some(error);
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -170,7 +177,10 @@ pub(crate) fn install_locked(
         if open && app_applied && graphical {
             match desktop.open(&paths.app, &paths.home) {
                 Ok(()) => state = WindowState::Opened,
-                Err(_) if !transactional => state = WindowState::Failed,
+                Err(error) if !transactional => {
+                    state = WindowState::Failed;
+                    window_error = Some(error);
+                }
                 Err(error) => return Err(error),
             }
         }
@@ -193,9 +203,10 @@ pub(crate) fn install_locked(
         && has_app
         && !has_previous_app
         && state != WindowState::Opened
-        && app.unwrap().hold_previous(&previous_app).is_err()
+        && let Err(error) = app.unwrap().hold_previous(&previous_app)
     {
         state = WindowState::Failed;
+        window_error = Some(error);
     }
     if state == WindowState::Opened && has_previous_app {
         let _ = fs::remove_dir_all(previous_app);
@@ -203,6 +214,7 @@ pub(crate) fn install_locked(
     Ok(Installed {
         version: version.into(),
         window: state,
+        window_error,
     })
 }
 

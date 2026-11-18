@@ -334,10 +334,15 @@ fn main() -> ExitCode {
                 .as_ref()
                 .is_ok_and(|result| result.window == WindowState::Opened);
             let code = respond(json, installed, |result| {
-                format!(
+                let mut report = format!(
                     "Rhythm {} installed. Desktop window: {:?}.\n",
                     result.version, result.window
-                )
+                );
+                if let Some(error) = result.window_error {
+                    report.push_str(error.message());
+                    report.push('\n');
+                }
+                report
             });
             if open && !opened {
                 ExitCode::FAILURE
