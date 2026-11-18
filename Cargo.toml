@@ -16,10 +16,12 @@ clap = { version = "4.6.7", features = ["derive"] }
 libc = "0.2.191"
 plist = "1.10.3"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+semver = { version = "1", features = ["serde"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.154", features = ["preserve_order", "arbitrary_precision"] }
 sha2 = "0.10"
 tempfile = "3.27.0"
+toml_edit = "0.25"
 
 [dev-dependencies]
 getrandom = "0.4.3"

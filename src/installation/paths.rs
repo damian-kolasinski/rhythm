@@ -45,6 +45,10 @@ impl Paths {
         self.area.join("current/rhythm")
     }
 
+    pub(super) fn previous_app(&self) -> PathBuf {
+        self.app.with_file_name(".Rhythm-previous.app")
+    }
+
     pub fn validate(&self) -> Result<()> {
         for dir in [
             self.home.join("Library"),

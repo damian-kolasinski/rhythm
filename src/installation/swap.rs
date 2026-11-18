@@ -48,9 +48,20 @@ impl Swap {
         }
         Ok(())
     }
+
+    pub fn hold_previous(self, destination: &Path) -> Result<()> {
+        if let Err(error) = fs::rename(&self.item, destination) {
+            self.restore()?;
+            return Err(match error.kind() {
+                std::io::ErrorKind::AlreadyExists => Error::InstallationConflict,
+                _ => Error::InstallationFailed,
+            });
+        }
+        Ok(())
+    }
 }
 
-fn exchange(first: &Path, second: &Path) -> Result<()> {
+pub(super) fn exchange(first: &Path, second: &Path) -> Result<()> {
     let first = CString::new(first.as_os_str().as_bytes()).map_err(|_| Error::InvalidRequest)?;
     let second = CString::new(second.as_os_str().as_bytes()).map_err(|_| Error::InvalidRequest)?;
     // Both paths are on the same volume and the staging parent is private.

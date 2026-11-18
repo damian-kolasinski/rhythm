@@ -7,6 +7,8 @@ mod scenes;
 #[cfg(target_os = "macos")]
 mod theme;
 #[cfg(target_os = "macos")]
+mod updates;
+#[cfg(target_os = "macos")]
 mod view;
 
 #[cfg(target_os = "macos")]

@@ -45,6 +45,7 @@ pub fn kit(dark: bool) -> Kit {
     colors.text_muted = paint("#525659", "#b8bcbf");
     colors.border_focus = paint("#005999", "#66bfff");
     colors.bg_accent = paint("#003b66", "#66bfff");
+    colors.bg_icon_button_contrast = colors.bg_accent;
     colors.submit_fg = paint("#ffffff", "#052033");
     let state = |bg, fg, border| StateColors {
         bg,

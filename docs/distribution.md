@@ -30,7 +30,8 @@ records the signer; later installations enforce continuity. Use a project
 environments. A failed verification is a failed install: do not replace the
 `packslip:` backend with an unverified download or a local build.
 
-The archive contains `rhythm`, `rhythm-ui`, and a short README at its root.
+The archive contains `rhythm`, `rhythm-ui`, `Rhythm.icns`, and a short README
+at its root.
 The installed CLI and Finder app are placed per user. Run `rhythm install
 --open` to place both again from the selected packslip release and confirm the
 window has rendered. With no desktop session the CLI remains available. Run
@@ -42,6 +43,24 @@ the installed recorder is returned to its original command before the
 recorder is removed. If a dependent routine is running, retry after it exits.
 The global mise request and unused release files are removed unless you pass
 `--keep-mise`.
+
+## Updates
+
+The installed app checks for a newer stable companion release on open and
+once an hour. It keeps the last offer if GitHub is unreachable. You can also
+run `rhythm update check` to check now.
+
+Use **Upgrade and reopen** in the window, or run `rhythm update install`.
+Rhythm verifies the release through packslip in an isolated mise environment.
+It waits up to 15 seconds for triggered runs to finish and defers the install
+if one is still running. Continuously running services can keep their current
+processes during the atomic replacement. Rhythm stages the CLI and signed app, swaps them in,
+and changes only Rhythm's existing global mise request. When reopening from
+the window, the previous app stays alive until the new one draws its first
+frame. If reopening fails, Rhythm restores the previous installation and mise
+request. `rhythm update status` shows progress or the cause of the last failure.
+If the update process is forcibly stopped, run `rhythm update install` again
+to reverify the recorded target and finish the interrupted installation.
 
 ## Development tasks
 

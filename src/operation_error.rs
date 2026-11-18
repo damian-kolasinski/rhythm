@@ -34,6 +34,11 @@ pub enum Error {
     WindowStartFailed,
     WindowStartTimeout,
     MiseUnavailable,
+    ReleaseCheckFailed,
+    ReleaseUnavailable,
+    ReleaseVerificationFailed,
+    UpdateDeferred,
+    UninstallDeferred,
 }
 impl Error {
     /// A fixed explanation that never echoes paths, values, or OS diagnostics.
@@ -85,6 +90,13 @@ impl Error {
             Self::WindowStartFailed => "Rhythm could not confirm that the new window was ready.",
             Self::WindowStartTimeout => "Rhythm's new window did not draw its first frame in time.",
             Self::MiseUnavailable => "Rhythm could not make the requested mise change.",
+            Self::ReleaseCheckFailed => "Rhythm could not check GitHub for an update.",
+            Self::ReleaseUnavailable => "No newer stable Rhythm companion release is available.",
+            Self::ReleaseVerificationFailed => "The Rhythm release could not be verified.",
+            Self::UpdateDeferred => "A routine is still running. Retry the update after it exits.",
+            Self::UninstallDeferred => {
+                "A routine is still using Rhythm. Retry uninstall after it exits."
+            }
         }
     }
 }

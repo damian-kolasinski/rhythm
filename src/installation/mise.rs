@@ -44,7 +44,7 @@ pub(super) struct Source {
 }
 
 pub(super) struct Mise {
-    executable: PathBuf,
+    pub(super) executable: PathBuf,
     pub tool: String,
 }
 
@@ -112,6 +112,44 @@ impl Mise {
         }
         Ok(entries.pop())
     }
+
+    pub fn supports_packslip(&self, home: &Path) -> Result<bool> {
+        let bytes = self.run(home, ["backends", "ls"])?;
+        Ok(String::from_utf8_lossy(&bytes)
+            .lines()
+            .any(|line| line.trim() == "packslip"))
+    }
+
+    pub fn installed_roots(&self, home: &Path) -> Result<Vec<PathBuf>> {
+        #[derive(Deserialize)]
+        struct InstalledPath {
+            install_path: PathBuf,
+        }
+        let bytes = self.run(home, ["ls", "--installed", "--json", &self.tool])?;
+        let entries: Vec<InstalledPath> =
+            serde_json::from_slice(&bytes).map_err(|_| Error::MiseUnavailable)?;
+        entries
+            .into_iter()
+            .map(|entry| {
+                entry
+                    .install_path
+                    .canonicalize()
+                    .map_err(|_| Error::MiseUnavailable)
+            })
+            .collect()
+    }
+}
+
+pub(super) fn removal_roots(paths: &Paths, keep: bool) -> Result<Vec<PathBuf>> {
+    if !keep
+        && let Some(mise) =
+            REPOSITORY.and_then(|repository| Mise::discover(&paths.home, repository))
+        && mise.supports_packslip(&paths.home)?
+        && mise.request(&paths.home)?.is_some()
+    {
+        return mise.installed_roots(&paths.home);
+    }
+    Ok(Vec::new())
 }
 
 pub(super) fn run(command: Command) -> Result<Vec<u8>> {
@@ -132,13 +170,10 @@ pub(super) fn forget(paths: &Paths, keep: bool) -> State {
     let Some(mise) = Mise::discover(&paths.home, repository) else {
         return State::NoMise;
     };
-    let Ok(backends) = mise.run(&paths.home, ["backends", "ls"]) else {
+    let Ok(packslip) = mise.supports_packslip(&paths.home) else {
         return State::Failed;
     };
-    if !String::from_utf8_lossy(&backends)
-        .lines()
-        .any(|line| line.trim() == "packslip")
-    {
+    if !packslip {
         return State::Absent;
     }
     let request = match mise.request(&paths.home) {

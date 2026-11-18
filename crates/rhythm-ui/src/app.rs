@@ -13,7 +13,7 @@ use rhythm::{
 };
 use rune::{App, AppSpec, Latest, Tx, Waker};
 
-use crate::{routine::Routine, scenes, theme, view};
+use crate::{routine::Routine, scenes, theme, updates::Updates, view};
 
 pub struct Window {
     pub snapshot: Option<Vec<Routine>>,
@@ -21,6 +21,7 @@ pub struct Window {
     pub failed: bool,
     pub now: Timestamp,
     pub sample: bool,
+    pub updates: Updates,
     installed: Option<InstalledWindow>,
     reports: Arc<Latest<Result<Vec<Routine>>>>,
     refresh: Option<mpsc::SyncSender<()>>,
@@ -34,6 +35,7 @@ impl Window {
             failed: false,
             now: Timestamp::now(),
             sample: false,
+            updates: Updates::default(),
             installed: InstalledWindow::current(),
             reports: Arc::new(Latest::default()),
             refresh: None,
@@ -49,6 +51,10 @@ impl Window {
         }
     }
 
+    pub fn upgrade(&mut self) {
+        self.updates.press();
+    }
+
     fn apply(&mut self, result: Result<Vec<Routine>>) {
         self.now = Timestamp::now();
         self.failed = result.is_err();
@@ -62,6 +68,12 @@ impl Window {
 fn setup(state: &mut Window, wake: Waker) {
     if state.sample {
         return;
+    }
+    if let Some(installed) = &state.installed
+        && let Ok(Some(build)) = window::build(&installed.app)
+        && let Ok(paths) = Paths::current()
+    {
+        state.updates.start(paths, build, wake.clone());
     }
     state.reports.set_waker(wake);
     let reports = Arc::clone(&state.reports);
@@ -83,19 +95,23 @@ fn setup(state: &mut Window, wake: Waker) {
     });
 }
 
-fn poll(state: &mut Window, _: f64, tx: &mut Tx) -> bool {
-    let Some(result) = state.reports.take() else {
-        return false;
-    };
-    if state
-        .installed
-        .as_ref()
-        .is_some_and(InstalledWindow::removed)
+fn poll(state: &mut Window, clock: f64, tx: &mut Tx) -> bool {
+    let changed = state.updates.poll(clock, tx);
+    let report = state.reports.take();
+    if (changed || report.is_some())
+        && state
+            .installed
+            .as_ref()
+            .is_some_and(InstalledWindow::removed)
     {
         tx.quit();
     }
-    state.apply(result);
-    true
+    if let Some(result) = report {
+        state.apply(result);
+        true
+    } else {
+        changed
+    }
 }
 
 pub fn spec() -> AppSpec<Window> {
@@ -168,9 +184,11 @@ impl InstalledWindow {
     }
 
     fn removed(&self) -> bool {
-        [&self.app, &self.link, &self.cli].iter().all(|path| {
-            std::fs::symlink_metadata(path)
+        matches!(
+            window::build(&self.app),
+            Ok(None) | Err(rhythm::operation_error::Error::InstallationConflict)
+        ) && std::fs::read_link(&self.link).as_deref().ok() != Some(&self.cli)
+            && std::fs::symlink_metadata(&self.cli)
                 .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-        })
     }
 }

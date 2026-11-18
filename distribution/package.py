@@ -79,6 +79,7 @@ def archive(binary, output, release_version, target=TARGET):
             raise ValueError("release executable contains a private build path")
         members[executable] = (contents, 0o755)
     output.mkdir(parents=True, exist_ok=True)
+    members["Rhythm.icns"] = ((ROOT / "assets/Rhythm.icns").read_bytes(), 0o644)
     members["README.txt"] = (
         b"Rhythm\n\nUse the signed release installer or run rhythm install --open.\nRun rhythm status or rhythm --help for the CLI.\n",
         0o644,

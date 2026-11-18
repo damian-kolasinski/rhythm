@@ -39,7 +39,7 @@ def verify(home, cli, env, installed, expected_mise):
     if run([link, "--version"], env, home).decode().strip() != f"rhythm {installed['version']}":
         raise RuntimeError("the installed CLI does not match the app")
     removed = json.loads(run([cli, "--json", "uninstall"], env, home))
-    if link.exists() or bundle.exists() or removed["mise"]["state"] != expected_mise:
+    if os.path.lexists(link) or bundle.exists() or removed["mise"]["state"] != expected_mise:
         raise RuntimeError("uninstall left a desktop installation behind")
     if expected_mise == "removed" and not removed["mise"]["pruned"]:
         raise RuntimeError("uninstall did not prune the mise release")
