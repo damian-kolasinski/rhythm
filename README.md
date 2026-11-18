@@ -4,6 +4,9 @@ Rhythm shows the background jobs agents leave on your machines, records what
 each run did, and tells you and your next agent session when one breaks.
 launchd keeps running the jobs; Rhythm makes them visible and predictable.
 
+[Watch the macOS companion demo](docs/rhythm-macos-demo.mp4) for the routines
+window, refresh, and the upgrade flow with sample data.
+
 ```sh
 rhythm demo                      # a two-minute tour with disposable jobs
 rhythm ui                        # open the installed macOS routines window
