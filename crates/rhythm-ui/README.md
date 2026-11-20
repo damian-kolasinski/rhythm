@@ -7,6 +7,12 @@ adopted for recording, and external jobs. The window refreshes automatically,
 lists sources it could not fully read, and keeps the previous successful view
 if a refresh fails.
 
+A routine whose recorded runs report open problems is flagged in amber and
+shows its problem count. Clicking it opens a dialog listing those problems as
+`rhythm findings` does; the dialog follows each refresh and closes once the
+problems are resolved. When skipped runs followed the newest real run, the
+latest activity adds when the routine last checked.
+
 Run the development window with `cargo run --locked -p rhythm-ui`. Add
 `-- --scene routines` for a window with synthetic data. `--list-scenes`
 lists the scenes available for snapshots.

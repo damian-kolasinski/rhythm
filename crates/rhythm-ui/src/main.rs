@@ -1,6 +1,8 @@
 #[cfg(target_os = "macos")]
 mod app;
 #[cfg(target_os = "macos")]
+mod problems;
+#[cfg(target_os = "macos")]
 mod routine;
 #[cfg(target_os = "macos")]
 mod scenes;

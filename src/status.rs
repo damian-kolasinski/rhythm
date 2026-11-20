@@ -1,5 +1,6 @@
 //! Report every job on the requested machines, most urgent first.
 use crate::{
+    findings::Stated,
     jobs::{Activation, Health, Job, Observation, RunStore, Supervisor},
     ledger::Ledger,
     operation_error::{Error, Result},
@@ -173,20 +174,27 @@ impl<'a> ReportReader<'a> {
     }
 
     pub(crate) fn read(&mut self, job: Job) -> Result<JobReport> {
-        let runs = match &job.recorded {
+        Ok(self.read_stating(job)?.0)
+    }
+
+    /// [`ReportReader::read`] with the open set the report's count of
+    /// problems comes from, as `rhythm findings` lists it; `None` for a job
+    /// that has never stated one.
+    pub(crate) fn read_stating(&mut self, job: Job) -> Result<(JobReport, Option<Stated>)> {
+        let (runs, stated) = match &job.recorded {
             Some(store) => {
                 let ledger = self
                     .opened
                     .entry(store.clone())
                     .or_insert_with(|| (self.ledgers)(store));
                 match ledger {
-                    Some(ledger) => ledger.recent(&job.label)?,
-                    None => RecentRuns::default(),
+                    Some(ledger) => ledger.recent_stating(&job.label)?,
+                    None => (RecentRuns::default(), None),
                 }
             }
-            None => RecentRuns::default(),
+            None => (RecentRuns::default(), None),
         };
-        Ok(JobReport::new(job, runs))
+        Ok((JobReport::new(job, runs), stated))
     }
 }
 
