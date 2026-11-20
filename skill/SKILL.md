@@ -5,9 +5,8 @@ description: Find, create, and debug background jobs on this machine with Rhythm
 
 # Rhythm
 
-Rhythm makes the user's launchd jobs visible and predictable. launchd keeps
-running them; Rhythm records each run of the jobs that opt in and reports what
-broke. Every command is noninteractive; add `--json` for structured output.
+Rhythm shows scheduled jobs on the Mac and records runs for user launchd jobs
+that opt in. macOS keeps running the jobs. Add `--json` for structured output.
 
 ## Look before you act
 
@@ -22,6 +21,14 @@ rhythm logs NAME                   # output of the newest run; --run ID for anot
 `--host DEST` reads another machine over ssh (`status` and `attention` take
 it repeatedly). A job marked `!` needs attention: `failing`, `down` (a
 keep-alive job not running), or `invalid` (launchd cannot load it).
+
+Start with `rhythm status` to investigate a user LaunchAgent. In its JSON,
+`recorded: true` means the job uses Rhythm's recorder. Use `rhythm ui` when
+you need the wider local inventory. **All** includes Rhythm-recorded jobs
+and discoverable periodic user and system launchd jobs and readable crontabs.
+**Rhythm** shows **Created by Rhythm** and **Adopted by Rhythm** jobs.
+**External** shows jobs Rhythm observes without recording their runs. The
+window names sources it could not fully read. See the [inventory scope](status.md).
 
 ## Create jobs with `rhythm add`, never by writing a plist
 
@@ -41,18 +48,18 @@ Rhythm created; `rhythm remove NAME` deletes one.
 
 ## Existing jobs
 
-`rhythm adopt LABEL` records the runs of a job someone wrote by hand, changing
-only its command; `unadopt` restores it. A running job needs `--restart`,
-which stops the current run. Rhythm never removes or replaces a job it did not
-create.
+`rhythm adopt LABEL` records an existing user LaunchAgent by wrapping its
+command. `unadopt` restores the command. A running job needs `--restart`,
+which stops the current run. Rhythm can replace or remove jobs it created.
+System launchd jobs and cron entries are read-only in the inventory.
 
 ## When something failed
 
 1. `rhythm logs NAME` shows what the failed run printed.
 2. Fix the cause, then `rhythm kick NAME --wait` to confirm; it exits 1 if the
    run failed. launchd starts a job at most once every ten seconds.
-3. An unrecorded job shows only its exit code: `rhythm adopt LABEL` so the next
-   run keeps its output.
+3. For an unrecorded user LaunchAgent, launchd can show its last exit.
+   `rhythm adopt LABEL` records the output of future runs.
 
 Tell the user about failures you find rather than silently retrying them.
 Each reference below has the details: `rhythm skill show NAME`.

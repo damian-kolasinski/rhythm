@@ -1,15 +1,62 @@
 use rhythm::{
     authoring::OWNED_PREFIX,
-    jobs::{Activation, Exit, Health, Observation},
+    jobs::{Activation, Exit, Health, Observation, Trigger},
+    routines::{CronEntry, CronTable, Ownership, Routine as DeviceRoutine, Snapshot, Source},
     runs::{Outcome, Run, RunState, Timestamp},
     status::JobReport,
     terminal_text::clean,
     time_text,
 };
+use std::collections::BTreeSet;
+
+#[derive(Default)]
+pub struct Inventory {
+    pub rows: Vec<Routine>,
+    pub incomplete: BTreeSet<Source>,
+}
+
+impl From<Snapshot> for Inventory {
+    fn from(snapshot: Snapshot) -> Self {
+        Self {
+            rows: snapshot.routines.into_iter().map(Routine::from).collect(),
+            incomplete: snapshot.incomplete,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum Filter {
+    #[default]
+    All,
+    Rhythm,
+    External,
+}
+
+impl Filter {
+    pub const OPTIONS: [Self; 3] = [Self::All, Self::Rhythm, Self::External];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Rhythm => "Rhythm",
+            Self::External => "External",
+        }
+    }
+
+    pub fn includes(self, ownership: Ownership) -> bool {
+        match self {
+            Self::All => true,
+            Self::Rhythm => ownership != Ownership::External,
+            Self::External => ownership == Ownership::External,
+        }
+    }
+}
 
 pub struct Routine {
+    pub key: String,
     pub name: String,
     pub label: String,
+    pub ownership: Ownership,
     pub state: Health,
     pub trigger: String,
     pub activity: Activity,
@@ -19,11 +66,31 @@ pub enum Activity {
     Recorded(Run),
     Running,
     Observed(Exit),
-    None,
+    NoRecording,
+    NoObservation,
+    Unavailable,
 }
 
-impl From<JobReport> for Routine {
-    fn from(job: JobReport) -> Self {
+impl From<DeviceRoutine> for Routine {
+    fn from(routine: DeviceRoutine) -> Self {
+        let ownership = routine.ownership();
+        match routine {
+            DeviceRoutine::Launchd {
+                source,
+                instance,
+                report,
+                additional_timers,
+            } => {
+                let key = format!("{source:?}/{instance}/{}", report.label);
+                Self::launchd(key, ownership, report, additional_timers)
+            }
+            DeviceRoutine::Cron(entry) => Self::cron(entry),
+        }
+    }
+}
+
+impl Routine {
+    fn launchd(key: String, ownership: Ownership, job: JobReport, timers: Vec<Trigger>) -> Self {
         let label = clean(&job.label);
         let short = label
             .strip_prefix(OWNED_PREFIX)
@@ -33,7 +100,7 @@ impl From<JobReport> for Routine {
             Some((end, _)) => name[..end].to_uppercase() + &name[end..],
             None => name.to_uppercase(),
         };
-        let trigger = match job.activation {
+        let mut trigger = match job.activation {
             Some(Activation::Service { always: true }) => "Keep alive".into(),
             Some(Activation::Service { always: false }) => "Conditional keep-alive".into(),
             Some(activation) => {
@@ -43,6 +110,10 @@ impl From<JobReport> for Routine {
             }
             None => "Unavailable".into(),
         };
+        for timer in timers {
+            use std::fmt::Write;
+            write!(trigger, ", {timer}").expect("writing to a String");
+        }
         let activity = match (job.observation, job.last_run) {
             (Observation::Loaded { pid: Some(_), .. }, Some(run))
                 if run.state == RunState::Running =>
@@ -58,14 +129,35 @@ impl From<JobReport> for Routine {
                 },
                 _,
             ) => Activity::Observed(exit),
-            _ => Activity::None,
+            (Observation::Unavailable, _) => Activity::Unavailable,
+            _ if job.recorded => Activity::NoRecording,
+            _ => Activity::NoObservation,
         };
         Self {
+            key,
             name,
             label,
+            ownership,
             state: job.health,
             trigger,
             activity,
+        }
+    }
+
+    fn cron(entry: CronEntry) -> Self {
+        let table = match entry.table {
+            CronTable::User => "User crontab".into(),
+            CronTable::System => "System crontab".into(),
+            CronTable::Other(index) => format!("Other crontab {index}"),
+        };
+        Self {
+            key: format!("cron/{:?}/{}", entry.table, entry.line),
+            name: "Cron job".into(),
+            label: format!("{table} · line {}", entry.line),
+            ownership: Ownership::External,
+            state: Health::Unknown,
+            trigger: entry.schedule,
+            activity: Activity::Unavailable,
         }
     }
 }
@@ -73,13 +165,15 @@ impl From<JobReport> for Routine {
 impl Activity {
     pub fn text(&self, now: Timestamp) -> (String, Option<String>) {
         match self {
-            Self::None => ("No recorded runs".into(), None),
+            Self::NoRecording => ("No recorded runs".into(), None),
+            Self::NoObservation => ("No observed runs".into(), None),
+            Self::Unavailable => ("Unavailable".into(), None),
             Self::Running => ("Running".into(), None),
             Self::Observed(exit) => (
-                if exit.succeeded() {
-                    "Succeeded".into()
-                } else {
-                    exit.to_string()
+                match exit {
+                    exit if exit.succeeded() => "Succeeded".into(),
+                    Exit::Code { code } => format!("Exit {code}"),
+                    exit => exit.to_string(),
                 },
                 Some("Time unavailable".into()),
             ),

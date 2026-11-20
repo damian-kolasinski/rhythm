@@ -110,6 +110,7 @@ fn detail(job: &JobReport, now: Timestamp) -> String {
         .map(|run| (run.started_at, &run.state));
     match (&job.observation, job.health, recorded) {
         (_, Health::Invalid, _) => "unreadable definition".into(),
+        (Observation::Unavailable, _, _) => "status unavailable".into(),
         (Observation::Unloaded, _, _) => "not loaded".into(),
         (Observation::Loaded { pid: Some(pid), .. }, _, Some((started, RunState::Running))) => {
             format!("pid {pid}, for {}", time_text::duration(now.0 - started.0))

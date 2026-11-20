@@ -92,7 +92,7 @@ impl Snapshot {
 fn runs(report: &JobReport) -> Option<u64> {
     match report.observation {
         Observation::Loaded { runs, .. } => Some(runs),
-        Observation::Unloaded => None,
+        Observation::Unloaded | Observation::Unavailable => None,
     }
 }
 
@@ -205,7 +205,7 @@ fn item(report: &JobReport, recovered_from: Option<Failures>) -> Item {
         health: report.health,
         last_exit: match report.observation {
             Observation::Loaded { last_exit, .. } => last_exit,
-            Observation::Unloaded => None,
+            Observation::Unloaded | Observation::Unavailable => None,
         },
         last_run: report.last_run.clone(),
         recovered_from,

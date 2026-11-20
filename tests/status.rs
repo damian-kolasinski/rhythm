@@ -1,6 +1,6 @@
 #![cfg(unix)]
 use rhythm::{
-    jobs::{Activation, Exit, Health, Observation},
+    jobs::{Activation, Exit, Health, Observation, Supervisor},
     launchd::Launchd,
     operation_error::Error,
     remote::Ssh,
@@ -161,7 +161,7 @@ fn reports_every_defined_job_most_urgent_first() {
 }
 
 #[test]
-fn desktop_inventory_only_observes_jobs_using_the_rhythm_recorder() {
+fn recorded_jobs_only_observes_jobs_using_the_rhythm_recorder() {
     let fixture = Fixture::new();
     for label in ["dev.rhythm.sample", "com.example.adopted"] {
         fixture.define(
@@ -181,16 +181,12 @@ fn desktop_inventory_only_observes_jobs_using_the_rhythm_recorder() {
         "com.example.adopted",
         "\truns = 1\n\tlast exit code = 0\n",
     );
-    let reports = status::routines(&fixture.launchd()).unwrap();
+    let jobs = fixture.launchd().recorded_jobs().unwrap();
     assert_eq!(
-        reports
-            .iter()
-            .map(|report| (report.label.as_str(), report.health))
+        jobs.iter()
+            .map(|job| job.label.as_str())
             .collect::<Vec<_>>(),
-        [
-            ("dev.rhythm.sample", Health::Failing),
-            ("com.example.adopted", Health::Ok)
-        ]
+        ["com.example.adopted", "dev.rhythm.sample"]
     );
     let calls = fs::read_to_string(fixture.path().join("launchctl-calls")).unwrap();
     assert!(!calls.contains("com.example.ordinary"));

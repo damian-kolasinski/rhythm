@@ -6,24 +6,29 @@ use std::{
 
 use rhythm::{
     installation::{Paths, window},
-    launchd::Launchd,
     operation_error::Result,
+    routines,
     runs::Timestamp,
-    status,
 };
 use rune::{App, AppSpec, Latest, Tx, Waker};
 
-use crate::{routine::Routine, scenes, theme, updates::Updates, view};
+use crate::{
+    routine::{Filter, Inventory},
+    scenes, theme,
+    updates::Updates,
+    view,
+};
 
 pub struct Window {
-    pub snapshot: Option<Vec<Routine>>,
+    pub snapshot: Option<Inventory>,
+    pub filter: Filter,
     pub freshness: Option<Timestamp>,
     pub failed: bool,
     pub now: Timestamp,
     pub sample: bool,
     pub updates: Updates,
     installed: Option<InstalledWindow>,
-    reports: Arc<Latest<Result<Vec<Routine>>>>,
+    reports: Arc<Latest<Result<Inventory>>>,
     refresh: Option<mpsc::SyncSender<()>>,
 }
 
@@ -31,6 +36,7 @@ impl Window {
     fn new() -> Self {
         Self {
             snapshot: None,
+            filter: Filter::All,
             freshness: None,
             failed: false,
             now: Timestamp::now(),
@@ -55,7 +61,7 @@ impl Window {
         self.updates.press();
     }
 
-    fn apply(&mut self, result: Result<Vec<Routine>>) {
+    fn apply(&mut self, result: Result<Inventory>) {
         self.now = Timestamp::now();
         self.failed = result.is_err();
         if let Ok(rows) = result {
@@ -81,9 +87,7 @@ fn setup(state: &mut Window, wake: Waker) {
     state.refresh = Some(refresh);
     thread::spawn(move || {
         loop {
-            let result = Launchd::current_user()
-                .and_then(|launchd| status::routines(&launchd))
-                .map(|rows| rows.into_iter().map(Routine::from).collect());
+            let result = routines::current().map(Inventory::from);
             reports.request(result, |result| result);
             if matches!(
                 requests.recv_timeout(Duration::from_secs(10)),

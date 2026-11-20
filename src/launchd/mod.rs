@@ -2,11 +2,14 @@
 //! and controlled through `launchctl` in the graphical or background user domain.
 mod definition;
 mod launchctl;
+mod periodic;
 mod print;
 mod registration;
 mod render;
+mod snapshot;
 
 use crate::{
+    definition_file,
     jobs::{Job, JobSpec, Label, Observation, Program, Supervisor},
     operation_error::{Error, Result},
 };
@@ -15,12 +18,9 @@ use launchctl::{Launchctl, Loaded};
 use registration::Change;
 use std::{
     fs,
-    io::Read,
-    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
 };
 
-const MAX_DEFINITION: u64 = 1024 * 1024;
 /// Concurrent `launchctl` processes while observing jobs.
 const PARALLEL: usize = 8;
 
@@ -28,6 +28,7 @@ pub struct Launchd {
     agents: PathBuf,
     launchctl: Launchctl,
 }
+pub(crate) use periodic::Periodic;
 impl Launchd {
     pub fn current_user() -> Result<Self> {
         if !cfg!(target_os = "macos") {
@@ -56,21 +57,9 @@ impl Launchd {
             .map_or(Observation::Unloaded, |l| l.observation))
     }
     fn definitions(&self) -> Result<Vec<PathBuf>> {
-        let entries = match fs::read_dir(&self.agents) {
-            Ok(entries) => entries,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
-            Err(_) => return Err(Error::DefinitionsUnavailable),
-        };
-        let mut paths: Vec<PathBuf> = entries
-            .filter_map(|e| e.ok().map(|e| e.path()))
-            .filter(|p| {
-                p.extension().is_some_and(|e| e == "plist")
-                    && p.file_name()
-                        .is_some_and(|n| !n.as_encoded_bytes().starts_with(b"."))
-            })
-            .collect();
-        paths.sort();
-        Ok(paths)
+        definitions(&self.agents)
+            .map(|listing| listing.paths)
+            .map_err(|_| Error::DefinitionsUnavailable)
     }
     /// The definition file declaring `label`: the file launchd loaded it from
     /// when loaded, else the conventional name, else any other.
@@ -267,18 +256,34 @@ impl Supervisor for Launchd {
 
 /// Only regular files: a FIFO or device named `*.plist` must not block status.
 fn read(path: &Path) -> Option<Vec<u8>> {
-    if !fs::metadata(path).ok()?.is_file() {
-        return None;
+    definition_file::read(path).ok()
+}
+
+#[derive(Default)]
+struct Definitions {
+    paths: Vec<PathBuf>,
+    incomplete: bool,
+}
+
+fn definitions(directory: &Path) -> std::io::Result<Definitions> {
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Definitions::default()),
+        Err(e) => return Err(e),
+    };
+    let mut listing = Definitions::default();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            listing.incomplete = true;
+            continue;
+        };
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "plist")
+            && !entry.file_name().as_encoded_bytes().starts_with(b".")
+        {
+            listing.paths.push(path);
+        }
     }
-    let file = fs::File::options()
-        .read(true)
-        .custom_flags(libc::O_NONBLOCK)
-        .open(path)
-        .ok()?;
-    if !file.metadata().ok()?.is_file() {
-        return None;
-    }
-    let mut bytes = vec![];
-    file.take(MAX_DEFINITION + 1).read_to_end(&mut bytes).ok()?;
-    (bytes.len() as u64 <= MAX_DEFINITION).then_some(bytes)
+    listing.paths.sort();
+    Ok(listing)
 }

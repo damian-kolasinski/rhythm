@@ -12,6 +12,29 @@ starts and what launchd last observed. Jobs needing attention come first.
 3 jobs, 1 needs attention
 ```
 
+## Desktop inventory
+
+`rhythm ui` opens the local Mac's Routines window. **All** contains jobs that
+record through Rhythm, including on-demand and keep-alive jobs, plus periodic
+user and system launchd jobs and readable cron schedules. The window combines
+interval and calendar triggers in the standard LaunchAgents and LaunchDaemons
+directories with timers discovered in live launchd registrations. Jobs can
+still appear as **Unloaded** when their definition is present on disk.
+
+**Rhythm** includes **Created by Rhythm** jobs and **Adopted by Rhythm** jobs.
+An adopted job keeps its original schedule and uses Rhythm to record runs.
+**External** includes the other periodic jobs. An external launchd job can show
+its last observed exit. Cron exposes the schedule and line number, so the
+window shows **Unknown** for its state and **Unavailable** for its latest
+activity. The window names sources it could not fully read. It reads as the
+current user and covers schedules exposed by launchd or cron. Timers internal
+to another application require that application's own inventory.
+
+For a CLI-only investigation, use `rhythm status` for user LaunchAgents,
+`launchctl print` for known launchd registrations, and `crontab -l` for the
+current user's cron schedule. Keep scheduler output private. It can contain
+commands, arguments, and environment values.
+
 ## States
 
 | State | Meaning | Attention |

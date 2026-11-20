@@ -80,11 +80,6 @@ pub fn jobs(
     reports(supervisor.jobs()?, ledgers)
 }
 
-/// The local desktop inventory shares the CLI's interpretation of jobs and runs.
-pub fn routines(supervisor: &impl Supervisor) -> Result<Vec<JobReport>> {
-    reports(supervisor.recorded_jobs()?, &local_ledgers(None))
-}
-
 pub fn local_ledgers(data_dir: Option<PathBuf>) -> impl Fn(&RunStore) -> Option<Ledger> {
     move |store| {
         let dir = match store {
@@ -100,14 +95,35 @@ fn reports(
     jobs: Vec<Job>,
     ledgers: &dyn Fn(&RunStore) -> Option<Ledger>,
 ) -> Result<Vec<JobReport>> {
-    let mut opened: HashMap<RunStore, Option<Ledger>> = HashMap::new();
-    let mut reports = vec![];
-    for job in jobs {
+    let mut reader = ReportReader::new(ledgers);
+    let mut reports = jobs
+        .into_iter()
+        .map(|job| reader.read(job))
+        .collect::<Result<Vec<_>>>()?;
+    reports.sort_by(|a, b| (a.health, &a.label).cmp(&(b.health, &b.label)));
+    Ok(reports)
+}
+
+pub(crate) struct ReportReader<'a> {
+    opened: HashMap<RunStore, Option<Ledger>>,
+    ledgers: &'a dyn Fn(&RunStore) -> Option<Ledger>,
+}
+
+impl<'a> ReportReader<'a> {
+    pub(crate) fn new(ledgers: &'a dyn Fn(&RunStore) -> Option<Ledger>) -> Self {
+        Self {
+            opened: HashMap::new(),
+            ledgers,
+        }
+    }
+
+    pub(crate) fn read(&mut self, job: Job) -> Result<JobReport> {
         let last_run = match &job.recorded {
             Some(store) => {
-                let ledger = opened
+                let ledger = self
+                    .opened
                     .entry(store.clone())
-                    .or_insert_with(|| ledgers(store));
+                    .or_insert_with(|| (self.ledgers)(store));
                 match ledger {
                     Some(ledger) => ledger.latest(&job.label)?,
                     None => None,
@@ -115,10 +131,8 @@ fn reports(
             }
             None => None,
         };
-        reports.push(JobReport::new(job, last_run));
+        Ok(JobReport::new(job, last_run))
     }
-    reports.sort_by(|a, b| (a.health, &a.label).cmp(&(b.health, &b.label)));
-    Ok(reports)
 }
 
 /// Every target's jobs, reading other machines over ssh.

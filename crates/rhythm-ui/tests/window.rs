@@ -7,6 +7,7 @@ const SCENES: &[&str] = &[
     "loading",
     "empty",
     "routines",
+    "partial",
     "stale",
     "unavailable",
     "release-available",
@@ -24,6 +25,31 @@ fn scenes_match_goldens() {
     }
     compare(scratch.path(), "stale", "light", "630x330");
     compare(scratch.path(), "release-available", "dark", "630x330");
+    compare(scratch.path(), "routines", "light", "630x330");
+}
+
+#[test]
+fn ownership_filters_include_only_the_matching_routines() {
+    let all = replay("routines", 59, 94, "0.7");
+    assert!(all.contains("Created by Rhythm"));
+    assert!(all.contains("Adopted by Rhythm"));
+    assert!(all.contains("com.example.sync-catalog"));
+    assert!(all.contains("User crontab"));
+
+    let rhythm = replay("routines", 137, 94, "0.7");
+    assert!(rhythm.contains("Created by Rhythm"));
+    assert!(rhythm.contains("Adopted by Rhythm"));
+    assert!(!rhythm.contains("com.example.sync-catalog"));
+    assert!(!rhythm.contains("User crontab"));
+    assert!(rhythm.contains("2 of 4 on this Mac"));
+    assert!(!rhythm.contains("needs attention"));
+
+    let external = replay("routines", 215, 94, "0.7");
+    assert!(external.contains("com.example.sync-catalog"));
+    assert!(external.contains("User crontab"));
+    assert!(!external.contains("Created by Rhythm"));
+    assert!(!external.contains("Adopted by Rhythm"));
+    assert!(external.contains("needs attention"));
 }
 
 #[test]

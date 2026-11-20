@@ -1,8 +1,11 @@
 # Rhythm for macOS
 
-The native window reads the same launchd health and recorder ledger as the CLI.
-It shows only definitions still configured to run through Rhythm. It refreshes
-automatically and keeps the previous successful view if the next read fails.
+The native window shares the CLI's launchd health and recorded run history.
+It also lists periodic system and user launchd jobs and readable cron entries.
+The ownership labels and filters distinguish jobs Rhythm created, jobs it
+adopted for recording, and external jobs. The window refreshes automatically,
+lists sources it could not fully read, and keeps the previous successful view
+if a refresh fails.
 
 Run the development window with `cargo run --locked -p rhythm-ui`. Add
 `-- --scene routines` for a window with synthetic data. `--list-scenes`
