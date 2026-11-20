@@ -13,6 +13,11 @@ const SCENES: &[&str] = &[
     "release-available",
     "release-offline",
     "release-failed",
+    "flagged",
+    "skipped",
+    "problems",
+    "problems-scroll",
+    "problems-unreadable",
 ];
 
 #[test]
@@ -26,6 +31,90 @@ fn scenes_match_goldens() {
     compare(scratch.path(), "stale", "light", "630x330");
     compare(scratch.path(), "release-available", "dark", "630x330");
     compare(scratch.path(), "routines", "light", "630x330");
+    compare(scratch.path(), "problems-scroll", "dark", "630x330");
+}
+
+const FLAGGED: &str = "UserAgent/0/dev.rhythm.check-links";
+const PROBLEM: &str = "docs/setup links to a removed page";
+
+#[test]
+fn tapping_a_routine_with_problems_opens_them_and_escape_closes_them() {
+    let tap = format!(r#"{{"t":0.3,"type":"tap","key":"{FLAGGED}"}}"#);
+    let open = script("flagged", &[&tap], "1.0");
+    assert!(open.contains(PROBLEM));
+    assert!(open.contains("blog/archive takes 14s to load"));
+    assert!(open.contains("Open link"));
+
+    let escape = r#"{"t":1.0,"type":"key","name":"Escape"}"#;
+    let closed = script("flagged", &[&tap, escape], "1.8");
+    assert!(!closed.contains(PROBLEM));
+    assert!(closed.contains("2 problems"));
+
+    let outside = r#"{"t":1.0,"type":"tap","x":40,"y":440}"#;
+    assert!(!script("flagged", &[&tap, outside], "1.8").contains(PROBLEM));
+}
+
+#[test]
+fn only_a_routine_with_problems_can_be_pressed() {
+    let window = tree(&script("flagged", &[], "0.5"));
+    let role = |key: &str| element(&window, |e| e["key"] == key)["role"].clone();
+    assert_eq!(role(FLAGGED), "button");
+    assert_eq!(role("UserAgent/0/dev.rhythm.archive-samples"), "group");
+    assert_eq!(role("Daemon/0/com.example.sync-catalog"), "group");
+
+    let tap = r#"{"t":0.3,"type":"tap","key":"UserAgent/0/dev.rhythm.archive-samples"}"#;
+    let window = script("flagged", &[tap], "1.0");
+    assert!(!window.contains("problems-dialog"));
+}
+
+#[test]
+fn needs_attention_is_red_only_while_a_routine_is_broken() {
+    let color = |window: &str| {
+        element(&tree(window), |e| {
+            e["text"].as_str().is_some_and(|t| t.ends_with("attention"))
+        })["color"]
+            .clone()
+    };
+    // The dark theme's danger and warning foregrounds.
+    let all = script("flagged", &[], "0.7");
+    assert!(all.contains("2 need attention"));
+    assert_eq!(color(&all), "#ffb3b3ff");
+    let rhythm = replay("flagged", 137, 94, "0.7");
+    assert!(rhythm.contains("1 needs attention"));
+    assert_eq!(color(&rhythm), "#f2c055ff");
+}
+
+#[test]
+fn a_long_list_of_problems_scrolls_to_its_end() {
+    let bottoms = |events: &[&str]| {
+        let window = tree(&script("problems-scroll", events, "1.5"));
+        let bottom = |key: &str| {
+            let rect = &element(&window, |e| e["key"] == key)["rect"];
+            rect[1].as_f64().unwrap() + rect[3].as_f64().unwrap()
+        };
+        (bottom("unlisted"), bottom("problems-dialog"))
+    };
+    let (end, dialog) = bottoms(&[]);
+    assert!(end > dialog, "the end of the list starts out of view");
+    let wheel = r#"{"t":0.3,"type":"wheel","key":"problem-list","dy":-100000}"#;
+    let (end, dialog) = bottoms(&[wheel]);
+    assert!(end <= dialog, "the end of the list scrolls into view");
+}
+
+fn tree(window: &str) -> serde_json::Value {
+    serde_json::from_str(window).unwrap()
+}
+
+fn element(
+    tree: &serde_json::Value,
+    matches: impl Fn(&serde_json::Value) -> bool,
+) -> &serde_json::Value {
+    tree["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|e| matches(e))
+        .unwrap()
 }
 
 #[test]
@@ -69,16 +158,22 @@ fn upgrade_button_reports_progress_and_the_new_version_in_the_demo_window() {
 }
 
 fn replay(scene: &str, x: u32, y: u32, end: &str) -> String {
-    let scratch = tempfile::tempdir().unwrap();
-    let script = scratch.path().join("refresh.json");
-    let tree = scratch.path().join("window.json");
-    fs::write(
-        &script,
-        format!(
-            r#"[{{"t":0.3,"type":"tap","x":{x},"y":{y}}},{{"t":{end},"type":"mark","name":"end"}}]"#
-        ),
+    script(
+        scene,
+        &[&format!(r#"{{"t":0.3,"type":"tap","x":{x},"y":{y}}}"#)],
+        end,
     )
-    .unwrap();
+}
+
+/// The window's tree after `events`, as of `end` seconds.
+fn script(scene: &str, events: &[&str], end: &str) -> String {
+    let scratch = tempfile::tempdir().unwrap();
+    let script = scratch.path().join("events.json");
+    let tree = scratch.path().join("window.json");
+    let mut events = events.to_vec();
+    let mark = format!(r#"{{"t":{end},"type":"mark","name":"end"}}"#);
+    events.push(&mark);
+    fs::write(&script, format!("[{}]", events.join(","))).unwrap();
     let result = Command::new(APP)
         .args([
             "--scene", scene, "--theme", "dark", "--size", "750x462", "--at", end, "--script",

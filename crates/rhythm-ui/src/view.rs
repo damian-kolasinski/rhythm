@@ -3,11 +3,12 @@ use rhythm::{
     routines::{Ownership, Source},
     time_text,
 };
-use rune::{Cx, El, ScrollSpec, col, el, row, text};
+use rune::{Cursor, Cx, El, ScrollSpec, col, el, row, text};
 use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl};
 
 use crate::{
     app::Window,
+    problems,
     routine::{Filter, Routine},
     theme,
 };
@@ -26,6 +27,12 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
         .iter()
         .filter(|routine| routine.state.needs_attention())
         .count();
+    // Red only while a routine is broken; open problems alone are amber.
+    let attention = if rows.iter().any(|routine| routine.state.broken()) {
+        kit.c.danger.fg
+    } else {
+        kit.c.warning.fg
+    };
     let mut meta = row().gap(theme::GAP);
     if state.snapshot.is_some() {
         let summary = if state.filter == Filter::All {
@@ -40,7 +47,7 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
         meta = meta.child(
             text(format!("· {count} {verb} attention"))
                 .font(theme::secondary())
-                .color(kit.c.danger.fg),
+                .color(attention),
         );
     }
     let heading = row()
@@ -178,7 +185,20 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
         .freshness
         .map(|at| format!("Routines refreshed {}", time_text::ago(at, state.now)))
         .unwrap_or_default();
-    col()
+    let mut overlays = Vec::new();
+    if let Some(routine) = state.inspected() {
+        // Kit's root fills the window, and its dialog keys its header.
+        let room = problems::Room {
+            window: cx
+                .layout_size("kit-root")
+                .map_or(problems::Room::DEFAULT.window, |[_, h]| h),
+            header: cx
+                .layout_size("problems-dialog/header")
+                .map_or(problems::Room::DEFAULT.header, |[_, h]| h),
+        };
+        problems::dialog(routine, state.now, room, &kit, &mut overlays);
+    }
+    let window = col()
         .w_full()
         .h_full()
         .fill(kit.c.page)
@@ -196,7 +216,8 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
                     &kit,
                 )))
                 .child(quiet(freshness, &kit)),
-        )
+        );
+    rune_kit::root(window, overlays)
 }
 
 fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
@@ -204,15 +225,20 @@ fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
         ["Routine", "State", "Trigger", "Latest activity"].map(|title| quiet(title, kit));
     let mut list = col().w_full();
     for job in rows {
-        let (activity, timing) = job.activity.text(state.now);
+        let summary = job.latest(state.now);
+        let headline = if job.problems.is_empty() {
+            kit.c.text_base
+        } else {
+            kit.c.warning.fg
+        };
         let mut latest = col().child(
-            text(activity)
+            text(summary.headline.clone())
                 .font(theme::body())
-                .color(kit.c.text_base)
+                .color(headline)
                 .wrap(),
         );
-        if let Some(timing) = timing {
-            latest = latest.child(quiet(timing, kit));
+        if let Some(detail) = summary.detail {
+            latest = latest.child(quiet(detail, kit).wrap());
         }
         let name = col()
             .gap(1.0)
@@ -230,22 +256,29 @@ fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
                     .selectable(true),
             )
             .child(ownership_badge(job.ownership, kit));
-        list = list
-            .child(
-                columns([
-                    name,
-                    pill(job.state, kit),
-                    text(job.trigger.clone())
-                        .font(theme::body())
-                        .color(kit.c.text_base)
-                        .wrap(),
-                    latest,
-                ])
-                .min_h(55.0)
-                .py(5.0)
-                .key(job.key.clone()),
-            )
-            .child(rule(kit));
+        let mut line = columns([
+            name,
+            pill(job.state, kit),
+            text(job.trigger.clone())
+                .font(theme::body())
+                .color(kit.c.text_base)
+                .wrap(),
+            latest,
+        ])
+        .min_h(55.0)
+        .py(5.0)
+        .key(job.key.clone());
+        // Only a routine with open problems has a dialog to open.
+        if !job.problems.is_empty() {
+            let key = job.key.clone();
+            line = line
+                .cursor(Cursor::Pointer)
+                .hover(kit.c.hover)
+                .press(kit.c.pressed)
+                .label(format!("{}, {}", job.name, summary.headline))
+                .on_press(move |window: &mut Window| window.show_problems(&key));
+        }
+        list = list.child(line).child(rule(kit));
     }
     let viewport = col()
         .w_full()

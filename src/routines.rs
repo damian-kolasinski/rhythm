@@ -2,6 +2,7 @@
 use crate::{
     authoring::OWNED_PREFIX,
     cron::Cron,
+    findings::Stated,
     jobs::{Health, Job, Trigger},
     launchd::{Launchd, Periodic},
     operation_error::Result,
@@ -57,6 +58,9 @@ pub enum Routine {
         report: JobReport,
         /// Timers alongside KeepAlive, or timers found only in live state.
         additional_timers: Vec<Trigger>,
+        /// The job's newest statement of its open problems, as `rhythm
+        /// findings` lists them, read together with `report`.
+        findings: Option<Stated>,
     },
     Cron(CronEntry),
 }
@@ -129,11 +133,13 @@ fn snapshot(scans: impl IntoIterator<Item = Scan>) -> Result<Snapshot> {
     for scan in scans {
         incomplete.extend(scan.incomplete);
         for entry in scan.launchd {
+            let (report, findings) = reader.read_stating(entry.job)?;
             routines.push(Routine::Launchd {
                 source: entry.source,
                 instance: entry.instance,
-                report: reader.read(entry.job)?,
+                report,
                 additional_timers: entry.additional_timers,
+                findings,
             });
         }
         routines.extend(scan.cron.into_iter().map(Routine::Cron));
@@ -354,5 +360,93 @@ mod tests {
         assert_eq!(snapshot.incomplete, [Source::LaunchdStatus].into());
         assert_eq!(snapshot.routines.len(), 1);
         assert_eq!(snapshot.routines[0].health(), Health::Unknown);
+    }
+
+    #[test]
+    fn a_recorded_job_carries_the_problems_it_left_open() {
+        use crate::{
+            findings::{self, OpenSet, Said},
+            jobs::Label,
+            ledger::{self, Ledger},
+            private_storage::Root,
+            runs::{Outcome, RunReport, Timestamp},
+        };
+        let scratch = tempfile::tempdir().unwrap();
+        let agents = scratch.path().join("agents");
+        let state = scratch.path().join("state");
+        fs::create_dir(&agents).unwrap();
+        let label = "dev.rhythm.check";
+        fs::write(agents.join(format!("{label}.plist")), format!(
+            r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>/opt/bin/rhythm</string><string>--data-dir</string><string>{}</string><string>run</string><string>{label}</string><string>--</string><string>/usr/bin/true</string></array><key>StartInterval</key><integer>60</integer></dict></plist>"#,
+            state.display()
+        )).unwrap();
+        let fixture = format!(
+            "system = {{\n}}\ngui/501 = {{\n}}\ngui/501/{label} = {{\n\truns = 1\n\tlast exit code = 0\n}}\n"
+        );
+        let launchctl = launchctl(scratch.path(), &fixture);
+        let ledger = Ledger::open(Root::open(state).unwrap(), ledger::READER_WAIT).unwrap();
+        let job: Label = label.parse().unwrap();
+        let state_problems = |listed: serde_json::Value| {
+            let said = Said::Readable(Some(findings::parse(&listed).unwrap()));
+            let previous = ledger.open_findings(label).unwrap();
+            let open = OpenSet::after(previous.as_ref().map(|s| &s.set), said, Timestamp(2000));
+            let id = ledger.start(&job, 1, Timestamp(1000)).unwrap();
+            ledger
+                .finish_stating(
+                    id,
+                    Timestamp(2000),
+                    Outcome::Code { code: 0 },
+                    &RunReport::default(),
+                    open.as_ref(),
+                )
+                .unwrap();
+        };
+        let routine = || {
+            let provider = Periodic::at_boundary(
+                Launchd::at_boundary(agents.clone(), launchctl.clone(), 501),
+                vec![(LaunchdSource::UserAgent, agents.clone())],
+            );
+            snapshot([provider.scan()]).unwrap().routines.remove(0)
+        };
+
+        state_problems(serde_json::json!([
+            {"key": "b", "title": "Second", "link": "https://example.com/b", "handled_by": "the example team"},
+            {"key": "a", "title": "First"}
+        ]));
+        let Routine::Launchd {
+            report, findings, ..
+        } = routine()
+        else {
+            panic!("expected launchd routine")
+        };
+        assert_eq!(report.health, Health::Flagged);
+        let open = findings.unwrap().set.open;
+        let listed: Vec<_> = open
+            .iter()
+            .map(|f| {
+                (
+                    f.problem.key.as_str(),
+                    f.problem.title.as_str(),
+                    f.problem.handled_by.as_ref().map(|h| h.as_str()),
+                )
+            })
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("b", "Second", Some("the example team")),
+                ("a", "First", None)
+            ]
+        );
+
+        state_problems(serde_json::json!([]));
+        let Routine::Launchd {
+            report, findings, ..
+        } = routine()
+        else {
+            panic!("expected launchd routine")
+        };
+        assert_eq!(report.health, Health::Ok);
+        assert!(findings.unwrap().set.open.is_empty());
     }
 }

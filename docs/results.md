@@ -203,6 +203,10 @@ report(
   resolved since that consumer's last look.
 - **Retention.** The open set lives on the run that stated it, which is kept
   however many runs follow, so open problems never vanish with old runs.
+- **Window.** `rhythm ui` marks a flagged routine with an amber pill and
+  shows its problem count as its latest activity. Clicking the routine lists
+  its open problems, each with how long it has been open, who handles it, its
+  detail, and an `Open link` button for a web link.
 
 ```text
 $ rhythm status

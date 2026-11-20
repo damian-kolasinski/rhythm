@@ -302,6 +302,11 @@ impl Ledger {
     /// The job's newest real run, a skip that followed it, the newest
     /// verdict on whether the job works, and how many problems are open.
     pub fn recent(&self, label: &str) -> Result<RecentRuns> {
+        Ok(self.recent_stating(label)?.0)
+    }
+    /// [`Ledger::recent`] with the open set its count of problems comes
+    /// from, read in the same snapshot.
+    pub fn recent_stating(&self, label: &str) -> Result<(RecentRuns, Option<Stated>)> {
         // One snapshot, so a run finishing meanwhile cannot mix two states.
         let snapshot = self
             .connection
@@ -313,14 +318,15 @@ impl Ledger {
         let verdict = self
             .newest_with_verdict(label, "")?
             .and_then(|run| run.state.verdict());
-        let open_findings = self.open_findings(label)?.map_or(0, |s| s.set.open.len());
+        let stated = self.open_findings(label)?;
         snapshot.commit().map_err(|_| Error::StorageUnavailable)?;
-        Ok(RecentRuns {
+        let runs = RecentRuns {
             last_run,
             last_skip,
             verdict,
-            open_findings,
-        })
+            open_findings: stated.as_ref().map_or(0, |s| s.set.open.len()),
+        };
+        Ok((runs, stated))
     }
     fn newest(&self, label: &str, filter: &str) -> Result<Option<Run>> {
         self.connection
