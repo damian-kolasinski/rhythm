@@ -2,6 +2,8 @@
 //! The command keeps launchd's environment, working directory, stdin, and
 //! process group, and the recorder exits the way the command did, so launchd
 //! still sees the job's real result. Recording never stops the job from running.
+//! A recorded command may also say how its run went through the result file
+//! named in its environment; see [`run_result`].
 use crate::{
     failure_notice::Notice,
     jobs::Label,
@@ -9,7 +11,8 @@ use crate::{
     notifier::Notifier,
     operation_error::Result,
     run_output::OutputLog,
-    runs::{Outcome, Timestamp},
+    run_result,
+    runs::{Outcome, RunReport, RunState, Timestamp},
 };
 use std::{
     ffi::OsString,
@@ -116,7 +119,9 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
         Ok(started) => started,
         Err(error) => {
             eprintln!("rhythm: this run cannot be recorded ({error}); running the command anyway");
-            let error = command(&recording.program).exec();
+            let error = command(&recording.program)
+                .env_remove(run_result::VARIABLE)
+                .exec();
             eprintln!("rhythm: the command could not be started");
             std::process::exit(exit_code_for(&error));
         }
@@ -126,16 +131,34 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
         None => (None, None, None),
     };
 
-    let mut child = match command(&recording.program)
+    // Only a run with private storage can take a result file. An inherited
+    // variable, as from an enclosing recorded job, names another run's file.
+    let mut command = command(&recording.program);
+    match &dir {
+        Some(dir) => command.env(run_result::VARIABLE, run_result::path(dir)),
+        None => command.env_remove(run_result::VARIABLE),
+    };
+    let mut child = match command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
     {
         Ok(child) => child,
         Err(error) => {
-            let _ = ledger.finish(id, Timestamp::now(), Outcome::SpawnFailed);
+            let ended_at = Timestamp::now();
+            let report = RunReport::default();
+            let _ = ledger.finish(id, ended_at, Outcome::SpawnFailed, &report);
             // A deleted script or a wrong path is the most common silent breakage.
-            notify(&ledger, &label, id, Outcome::SpawnFailed);
+            notify(
+                &ledger,
+                &label,
+                id,
+                &RunState::Finished {
+                    ended_at,
+                    outcome: Outcome::SpawnFailed,
+                    report,
+                },
+            );
             eprintln!("rhythm: the command could not be started");
             std::process::exit(exit_code_for(&error));
         }
@@ -176,10 +199,24 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
         Outcome::Signal { signal } if STOPPED.load(Ordering::SeqCst) => Outcome::Stopped { signal },
         outcome => outcome,
     };
-    if ledger.finish(id, Timestamp::now(), outcome).is_err() {
+    // The command has exited, so reading its bounded result file cannot hold it up.
+    let report = dir
+        .as_deref()
+        .map_or_else(RunReport::default, run_result::collect);
+    let ended_at = Timestamp::now();
+    if ledger.finish(id, ended_at, outcome, &report).is_err() {
         eprintln!("rhythm: the outcome of this run could not be recorded");
     }
-    notify(&ledger, &label, id, outcome);
+    notify(
+        &ledger,
+        &label,
+        id,
+        &RunState::Finished {
+            ended_at,
+            outcome,
+            report,
+        },
+    );
     if open > 0 {
         // Descendants still hold the pipes. Closing them would kill those
         // descendants with SIGPIPE, which a direct launch would not.
@@ -194,13 +231,13 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
 }
 
 /// Tells the operator when the job starts failing or recovers. A run ended by
-/// a stop request is not a failure of the job.
-fn notify(ledger: &Ledger, label: &Label, id: i64, outcome: Outcome) {
+/// a stop request is not a failure of the job, and a skip is neither.
+fn notify(ledger: &Ledger, label: &Label, id: i64, run: &RunState) {
     if STOPPED.load(Ordering::SeqCst) {
         return;
     }
     let previous = ledger.previous_finished(label.as_str(), id).ok().flatten();
-    if let Some(notice) = Notice::after(previous.as_ref().map(|r| &r.state), outcome) {
+    if let Some(notice) = Notice::after(previous.as_ref().map(|r| &r.state), run) {
         Notifier::from_environment().deliver(
             &notice.title(label.as_str()),
             &notice.message(label.as_str()),
@@ -224,7 +261,7 @@ fn stop_if_signalled<T>(started: &Result<(Ledger, Label, i64, T)>) {
     if let Some(signal) = pending().first() {
         let outcome = Outcome::Signal { signal: *signal };
         if let Ok((ledger, _, id, _)) = started {
-            let _ = ledger.finish(*id, Timestamp::now(), outcome);
+            let _ = ledger.finish(*id, Timestamp::now(), outcome, &RunReport::default());
         }
         exit_as(outcome);
     }

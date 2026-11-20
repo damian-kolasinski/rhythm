@@ -1,0 +1,6 @@
+  JOB                SCHEDULE   STATE    LAST
+! com.example.watch  every 15m  failing  exit 1, 2h ago · skipped 4m ago
+  com.example.poll   every 15m  ok       exit 0, 3h ago · skipped 4m ago
+  com.example.quiet  every 15m  ok       skipped 4m ago
+
+3 jobs, 1 needs attention

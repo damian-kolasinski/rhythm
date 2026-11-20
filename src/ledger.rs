@@ -3,7 +3,8 @@ use crate::{
     jobs::Label,
     operation_error::{Error, Result},
     private_storage::{self, Root},
-    runs::{Outcome, Run, RunState, Timestamp},
+    retention::{self, Stored},
+    runs::{Outcome, RecentRuns, ResultError, Run, RunReport, RunState, Summary, Timestamp},
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::{
@@ -14,13 +15,26 @@ use std::{
 };
 
 const FILE: &str = "ledger.sqlite3";
-const SCHEMA: i64 = 1;
+/// Version 2 adds what runs report about themselves. Migrations only go
+/// forward: an older Rhythm refuses a newer ledger as `unsupported_schema`.
+const SCHEMA: i64 = 2;
+const CREATE_1: &str = "CREATE TABLE IF NOT EXISTS runs (
+                          id INTEGER PRIMARY KEY AUTOINCREMENT,
+                          label TEXT NOT NULL,
+                          started_at INTEGER NOT NULL,
+                          recorder_pid INTEGER NOT NULL,
+                          ended_at INTEGER,
+                          outcome TEXT,
+                          CHECK ((ended_at IS NULL) = (outcome IS NULL))
+                        );
+                        CREATE INDEX IF NOT EXISTS runs_by_label ON runs (label, id);";
+const MIGRATE_2: &str = "ALTER TABLE runs ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0;
+                         ALTER TABLE runs ADD COLUMN summary TEXT;
+                         ALTER TABLE runs ADD COLUMN result_error TEXT;";
+const COLUMNS: &str =
+    "id, label, started_at, recorder_pid, ended_at, outcome, skipped, summary, result_error";
 const LOCK: &str = "recorder.lock";
 const OPEN_LOCK: &str = "ledger.lock";
-/// Runs kept per job, with their output.
-pub const KEEP: i64 = 100;
-/// Unfinished runs younger than this are never pruned: they may still be running.
-const UNFINISHED_GRACE_MS: i64 = 7 * 86_400_000;
 /// How long readers wait for a busy ledger.
 pub const READER_WAIT: Duration = Duration::from_secs(10);
 /// A recorder waits briefly: a busy ledger must not delay the job much.
@@ -66,61 +80,101 @@ impl Ledger {
             .connection
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .map_err(|_| Error::StorageUnavailable)?;
-        match version {
-            SCHEMA => Ok(()),
-            0 => self
-                .connection
-                .execute_batch(
-                    "BEGIN IMMEDIATE;
-                     CREATE TABLE IF NOT EXISTS runs (
-                       id INTEGER PRIMARY KEY AUTOINCREMENT,
-                       label TEXT NOT NULL,
-                       started_at INTEGER NOT NULL,
-                       recorder_pid INTEGER NOT NULL,
-                       ended_at INTEGER,
-                       outcome TEXT,
-                       CHECK ((ended_at IS NULL) = (outcome IS NULL))
-                     );
-                     CREATE INDEX IF NOT EXISTS runs_by_label ON runs (label, id);
-                     PRAGMA user_version = 1;
-                     COMMIT;",
-                )
-                .map_err(|_| Error::StorageUnavailable),
-            _ => Err(Error::UnsupportedSchema),
-        }
+        let steps = match version {
+            SCHEMA => return Ok(()),
+            0 => [CREATE_1, MIGRATE_2].concat(),
+            1 => MIGRATE_2.to_owned(),
+            _ => return Err(Error::UnsupportedSchema),
+        };
+        self.connection
+            .execute_batch(&format!(
+                "BEGIN IMMEDIATE; {steps} PRAGMA user_version = {SCHEMA}; COMMIT;"
+            ))
+            .map_err(|_| {
+                let _ = self.connection.execute_batch("ROLLBACK");
+                Error::StorageUnavailable
+            })
     }
 
-    /// Records a new run and drops the oldest finished ones beyond [`KEEP`] for its job.
     pub fn start(&self, label: &Label, recorder_pid: u32, at: Timestamp) -> Result<i64> {
-        let transaction = || -> rusqlite::Result<(i64, Vec<i64>)> {
-            self.connection.execute(
+        self.connection
+            .execute(
                 "INSERT INTO runs (label, started_at, recorder_pid) VALUES (?1, ?2, ?3)",
                 params![label.as_str(), at.0, recorder_pid],
-            )?;
-            let id = self.connection.last_insert_rowid();
-            let expired: Vec<i64> = self
+            )
+            .map_err(|_| Error::StorageUnavailable)?;
+        let id = self.connection.last_insert_rowid();
+        // Whether this run will be skipped is not known yet, so it does not
+        // count yet; pruning now keeps runs that are always lost in check.
+        let _ = self.prune(id, at, Some(id));
+        Ok(id)
+    }
+    /// Records how the run ended together with what it reported about itself.
+    pub fn finish(
+        &self,
+        id: i64,
+        at: Timestamp,
+        outcome: Outcome,
+        report: &RunReport,
+    ) -> Result<()> {
+        let skipped = RunState::Finished {
+            ended_at: at,
+            outcome,
+            report: report.clone(),
+        }
+        .skipped();
+        self.connection
+            .execute(
+                "UPDATE runs SET ended_at = ?1, outcome = ?2, skipped = ?3, summary = ?4,
+                   result_error = ?5
+                 WHERE id = ?6 AND ended_at IS NULL",
+                params![
+                    at.0,
+                    serde_json::to_string(&outcome).unwrap(),
+                    skipped,
+                    report.summary.as_ref().map(Summary::as_str),
+                    report.result_error.map(ResultError::code),
+                    id
+                ],
+            )
+            .map_err(|_| Error::StorageUnavailable)?;
+        // Only now is it known whether the run was skipped. The outcome is
+        // recorded either way; the next run retries a failed prune.
+        let _ = self.prune(id, at, None);
+        Ok(())
+    }
+    /// Drops the runs of `id`'s job beyond what [`retention`] keeps, with
+    /// their output, leaving `pending` aside.
+    fn prune(&self, id: i64, at: Timestamp, pending: Option<i64>) -> Result<()> {
+        let transaction = || -> rusqlite::Result<Vec<i64>> {
+            let stored: Vec<Stored> = self
                 .connection
                 .prepare(
-                    "SELECT id FROM runs WHERE label = ?1
-                       AND (ended_at IS NOT NULL OR started_at < ?3)
-                       AND id NOT IN (SELECT id FROM runs WHERE label = ?1 ORDER BY id DESC LIMIT ?2)",
+                    "SELECT id, started_at, ended_at IS NOT NULL, skipped FROM runs
+                     WHERE label = (SELECT label FROM runs WHERE id = ?1) AND id != ?2
+                     ORDER BY id DESC",
                 )?
-                .query_map(
-                    params![label.as_str(), KEEP, at.0 - UNFINISHED_GRACE_MS],
-                    |r| r.get(0),
-                )?
+                .query_map(params![id, pending.unwrap_or(0)], |r| {
+                    Ok(Stored {
+                        id: r.get(0)?,
+                        started_at: Timestamp(r.get(1)?),
+                        finished: r.get(2)?,
+                        skipped: r.get(3)?,
+                    })
+                })?
                 .collect::<rusqlite::Result<_>>()?;
+            let expired = retention::expired(&stored, at);
             for old in &expired {
                 self.connection
                     .execute("DELETE FROM runs WHERE id = ?1", [old])?;
             }
-            Ok((id, expired))
+            Ok(expired)
         };
         self.connection
             .execute_batch("BEGIN IMMEDIATE")
             .map_err(|_| Error::StorageUnavailable)?;
-        let (id, expired) = match transaction() {
-            Ok(result) => result,
+        let expired = match transaction() {
+            Ok(expired) => expired,
             Err(_) => {
                 let _ = self.connection.execute_batch("ROLLBACK");
                 return Err(Error::StorageUnavailable);
@@ -132,17 +186,7 @@ impl Ledger {
         for old in expired {
             let _ = std::fs::remove_dir_all(self.output_location(old));
         }
-        Ok(id)
-    }
-    pub fn finish(&self, id: i64, at: Timestamp, outcome: Outcome) -> Result<()> {
-        let outcome = serde_json::to_string(&outcome).unwrap();
-        self.connection
-            .execute(
-                "UPDATE runs SET ended_at = ?1, outcome = ?2 WHERE id = ?3 AND ended_at IS NULL",
-                params![at.0, outcome, id],
-            )
-            .map_err(|_| Error::StorageUnavailable)
-            .map(|_| ())
+        Ok(())
     }
     /// The private directory holding a run's output, created on first use.
     pub fn output_dir(&self, id: i64) -> Result<PathBuf> {
@@ -156,29 +200,33 @@ impl Ledger {
         self.root.path().join("runs").join(id.to_string())
     }
 
-    /// The job's last run before `id` that says whether the job worked: lost
-    /// and stopped runs do not.
+    /// The job's last run before `id` that says whether the job worked: lost,
+    /// stopped, and skipped runs do not.
     pub fn previous_finished(&self, label: &str, id: i64) -> Result<Option<Run>> {
+        self.newest_with_verdict(label, &format!("AND id < {id} AND ended_at IS NOT NULL"))
+    }
+    /// The newest run matching `filter` that says whether the job works; see
+    /// [`RunState::verdict`].
+    fn newest_with_verdict(&self, label: &str, filter: &str) -> Result<Option<Run>> {
         self.connection
-            .query_row(
-                "SELECT id, label, started_at, recorder_pid, ended_at, outcome FROM runs
-                 WHERE label = ?1 AND id < ?2 AND ended_at IS NOT NULL
-                   AND outcome NOT LIKE ?3
-                 ORDER BY id DESC LIMIT 1",
-                params![label, id, r#"{"type":"stopped"%"#],
-                |r| run(r, &self.root),
-            )
-            .optional()
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM runs WHERE label = ?1 AND skipped = 0 {filter}
+                 ORDER BY id DESC"
+            ))
+            .and_then(|mut s| {
+                s.query_map([label], |r| run(r, &self.root))?
+                    .find(|r| r.as_ref().map_or(true, |run| run.state.verdict().is_some()))
+                    .transpose()
+            })
             .map_err(|_| Error::StorageUnavailable)
     }
     /// Runs of the job after `id` that failed or were lost, oldest first.
     pub fn failures_after(&self, label: &str, id: i64) -> Result<Vec<Run>> {
         let mut runs: Vec<Run> = self
             .connection
-            .prepare(
-                "SELECT id, label, started_at, recorder_pid, ended_at, outcome FROM runs
-                 WHERE label = ?1 AND id > ?2 ORDER BY id",
-            )
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM runs WHERE label = ?1 AND id > ?2 ORDER BY id"
+            ))
             .and_then(|mut s| {
                 s.query_map(params![label, id], |r| run(r, &self.root))?
                     .collect()
@@ -187,18 +235,63 @@ impl Ledger {
         runs.retain(|r| r.state.failed());
         Ok(runs)
     }
+    /// The newest run, skipped or not.
     pub fn latest(&self, label: &str) -> Result<Option<Run>> {
-        Ok(self.history(label, 1)?.pop())
+        self.newest(label, "")
     }
-    /// Newest first.
-    pub fn history(&self, label: &str, limit: u32) -> Result<Vec<Run>> {
+    /// The job's newest real run, a skip that followed it, and the newest
+    /// verdict on whether the job works.
+    pub fn recent(&self, label: &str) -> Result<RecentRuns> {
+        // One snapshot, so a run finishing meanwhile cannot mix two states.
+        let snapshot = self
+            .connection
+            .unchecked_transaction()
+            .map_err(|_| Error::StorageUnavailable)?;
+        let last_run = self.newest(label, "AND skipped = 0")?;
+        let after = last_run.as_ref().map_or(0, |r| r.id);
+        let last_skip = self.newest(label, &format!("AND skipped = 1 AND id > {after}"))?;
+        let verdict = self
+            .newest_with_verdict(label, "")?
+            .and_then(|run| run.state.verdict());
+        snapshot.commit().map_err(|_| Error::StorageUnavailable)?;
+        Ok(RecentRuns {
+            last_run,
+            last_skip,
+            verdict,
+        })
+    }
+    fn newest(&self, label: &str, filter: &str) -> Result<Option<Run>> {
         self.connection
-            .prepare(
-                "SELECT id, label, started_at, recorder_pid, ended_at, outcome FROM runs
-                 WHERE label = ?1 ORDER BY id DESC LIMIT ?2",
+            .query_row(
+                &format!(
+                    "SELECT {COLUMNS} FROM runs WHERE label = ?1 {filter} ORDER BY id DESC LIMIT 1"
+                ),
+                [label],
+                |r| run(r, &self.root),
             )
+            .optional()
+            .map_err(|_| Error::StorageUnavailable)
+    }
+    /// The newest `limit` runs that were not skipped, with the skipped runs
+    /// among and after them; newest first.
+    pub fn history(&self, label: &str, limit: u32) -> Result<Vec<Run>> {
+        let oldest: i64 = self
+            .connection
+            .query_row(
+                "SELECT id FROM runs WHERE label = ?1 AND skipped = 0
+                 ORDER BY id DESC LIMIT 1 OFFSET ?2",
+                params![label, limit.saturating_sub(1)],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(|_| Error::StorageUnavailable)?
+            .unwrap_or(0);
+        self.connection
+            .prepare(&format!(
+                "SELECT {COLUMNS} FROM runs WHERE label = ?1 AND id >= ?2 ORDER BY id DESC"
+            ))
             .and_then(|mut s| {
-                s.query_map(params![label, limit], |r| run(r, &self.root))?
+                s.query_map(params![label, oldest], |r| run(r, &self.root))?
                     .collect()
             })
             .map_err(|_| Error::StorageUnavailable)
@@ -206,8 +299,7 @@ impl Ledger {
     pub fn run(&self, id: i64) -> Result<Option<Run>> {
         self.connection
             .query_row(
-                "SELECT id, label, started_at, recorder_pid, ended_at, outcome FROM runs
-                 WHERE id = ?1",
+                &format!("SELECT {COLUMNS} FROM runs WHERE id = ?1"),
                 [id],
                 |r| run(r, &self.root),
             )
@@ -225,6 +317,15 @@ fn run(row: &Row, root: &Root) -> rusqlite::Result<Run> {
             outcome: serde_json::from_str(&outcome).map_err(|e| {
                 rusqlite::Error::FromSqlConversionFailure(5, rusqlite::types::Type::Text, e.into())
             })?,
+            report: RunReport {
+                skipped: row.get(6)?,
+                summary: row
+                    .get::<_, Option<String>>(7)?
+                    .and_then(|text| Summary::new(&text)),
+                result_error: row
+                    .get::<_, Option<String>>(8)?
+                    .and_then(|code| ResultError::from_code(&code)),
+            },
         },
         _ => {
             let id: i64 = row.get(0)?;

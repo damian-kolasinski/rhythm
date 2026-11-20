@@ -2,7 +2,7 @@
 use rhythm::{
     jobs::{Activation, Calendar, Exit, Health, Observation, Trigger},
     operation_error::Error,
-    runs::{Outcome, Run, RunState, Timestamp},
+    runs::{Outcome, Run, RunReport, RunState, Timestamp, Verdict},
     status::{HostOutcome, HostStatus, JobReport},
     status_render::render,
 };
@@ -21,11 +21,13 @@ fn golden(name: &str, actual: &str) {
 fn job(label: &str, activation: Option<Activation>, observation: Observation) -> JobReport {
     JobReport {
         label: label.into(),
-        health: Health::assess(activation.as_ref(), &observation),
+        health: Health::assess(activation.as_ref(), &observation, None),
         activation,
         observation,
         recorded: false,
         last_run: None,
+        last_skip: None,
+        verdict: None,
         run_store: None,
     }
 }
@@ -181,6 +183,7 @@ fn renders_recorded_runs_with_their_timing() {
     let finished = |code, ago| RunState::Finished {
         ended_at: Timestamp(NOW.0 - ago),
         outcome: Outcome::Code { code },
+        report: RunReport::default(),
     };
     golden(
         "status-recorded",
@@ -210,6 +213,59 @@ fn renders_recorded_runs_with_their_timing() {
                     finished(0, 45_000),
                     50_000,
                 ),
+            ])],
+            NOW,
+            false,
+        ),
+    );
+}
+
+#[test]
+fn renders_the_newest_real_run_and_a_skip_that_followed_it() {
+    const MINUTE: i64 = 60_000;
+    let run = |id, ago: i64, code, skipped| Run {
+        id,
+        label: "com.example.poll".into(),
+        started_at: Timestamp(NOW.0 - ago - 1000),
+        state: RunState::Finished {
+            ended_at: Timestamp(NOW.0 - ago),
+            outcome: Outcome::Code { code },
+            report: RunReport {
+                skipped,
+                ..RunReport::default()
+            },
+        },
+    };
+    let polled = |label: &str, last_run: Option<Run>, verdict: Option<Verdict>| {
+        // launchd saw the skip, which exited 0.
+        let observation = loaded(None, Some(Exit::Code { code: 0 }));
+        let activation = Some(Activation::Triggered {
+            triggers: vec![Trigger::Interval { seconds: 900 }],
+        });
+        JobReport {
+            health: Health::assess(activation.as_ref(), &observation, verdict),
+            recorded: true,
+            last_run,
+            last_skip: Some(run(9, 4 * MINUTE, 0, true)),
+            verdict,
+            ..job(label, activation, observation)
+        }
+    };
+    golden(
+        "status-skips",
+        &render(
+            &[local(vec![
+                polled(
+                    "com.example.watch",
+                    Some(run(3, 2 * 60 * MINUTE, 1, false)),
+                    Some(Verdict::Failed),
+                ),
+                polled(
+                    "com.example.poll",
+                    Some(run(5, 3 * 60 * MINUTE, 0, false)),
+                    Some(Verdict::Succeeded),
+                ),
+                polled("com.example.quiet", None, None),
             ])],
             NOW,
             false,

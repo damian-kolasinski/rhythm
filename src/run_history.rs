@@ -42,7 +42,8 @@ pub fn history(ledger: Option<&Ledger>, label: &Label, limit: u32) -> Result<His
     })
 }
 
-/// The newest run's output, or the run `id` when it belongs to `label`.
+/// The output of the newest run that was not skipped, or of the newest skip
+/// when every run was, or of the run `id` when it belongs to `label`.
 pub fn logs(
     ledger: Option<&Ledger>,
     label: &Label,
@@ -55,7 +56,10 @@ pub fn logs(
     let ledger = ledger.ok_or(Error::NotFound)?;
     let run = match id {
         Some(id) => ledger.run(id)?.filter(|r| r.label == label.as_str()),
-        None => ledger.latest(label.as_str())?,
+        None => match ledger.recent(label.as_str())?.last_run {
+            Some(run) => Some(run),
+            None => ledger.latest(label.as_str())?,
+        },
     }
     .ok_or(Error::NotFound)?;
     let tail = run_output::tail(&ledger.output_location(run.id), bytes)?;

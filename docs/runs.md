@@ -24,6 +24,7 @@ an executable at a stable location, such as a pinned mise install.
 
 ```sh
 rhythm history com.example.scan              # newest first, 20 by default
+rhythm history com.example.scan --all        # each skipped run on its own row
 rhythm logs com.example.scan                 # newest run's output
 rhythm logs com.example.scan --run 42        # a specific run
 rhythm --json history com.example.scan --limit 100
@@ -32,11 +33,20 @@ rhythm logs com.example.scan --host devbox   # another machine over ssh
 
 `status` shows when a recorded job's last run ended, as in `exit 1, 2h ago`.
 
+A job can also say that a run checked and had nothing to do, or describe it
+in one line, through the result file named by `RHYTHM_RESULT`; see [run
+results](results.md). `history` puts consecutive skipped runs on one row, as
+in `skipped ×12 since 11:17: nothing new`, and shows a run's summary after its
+outcome, as in `exit 0: synced 3 new items`. `--limit` counts runs that were
+not skipped; the skipped runs among and after them come along. `logs` without
+`--run` shows the newest run that was not skipped.
+
 ## What the recorder changes
 
 Almost nothing about how the job runs. The command inherits launchd's
 environment, plus `RHYTHM_JOB` naming the job so tools it runs know they run
-inside one, and launchd's working directory, stdin, and process group, so launchd's process-group cleanup
+inside one and, when the run can be stored, `RHYTHM_RESULT` naming its
+[result file](results.md), and launchd's working directory, stdin, and process group, so launchd's process-group cleanup
 and keep-alive rules apply as before. Termination, interrupt, hangup, quit,
 and user signals sent to the recorder are forwarded to the command. The
 recorder then exits with the command's exit code, or dies by the same signal
@@ -78,10 +88,17 @@ share the ledger safely.
 Each run keeps the newest 512 KiB to 1 MiB of output. `logs` returns the newest
 64 KiB by default (`--bytes`, up to 1 MiB), decoded as UTF-8 with invalid
 sequences replaced; `truncated` says earlier output is not included. Each job
-keeps its newest 100 runs; older finished runs and their output are removed
-when a new run starts. Unfinished runs are kept for seven days, as they may
-still be running. Output can contain sensitive data and never leaves the state
-directory except through `logs`.
+keeps its newest 100 runs that were not skipped and its newest 20 skipped
+runs; older finished runs and their output are removed as runs start and
+finish.
+Unfinished runs are kept for seven days, as they may still be running. Output
+can contain sensitive data and never leaves the state directory except through
+`logs`.
+
+The ledger's format only moves forward. This version migrates an older ledger
+in place on first use, and an older Rhythm then refuses it with
+`unsupported_schema`; an older recorder in that state runs its command without
+recording it. Installing a release repoints the recorder that jobs use.
 
 Each recorder holds a lock on its run for as long as it lives. A run without an
 outcome whose lock is free, as after `SIGKILL`, is reported as `lost`. Readers
@@ -100,7 +117,8 @@ never create the state directory.
       "started_at": "2026-10-29T08:07:00.120Z",
       "state": "finished",
       "ended_at": "2026-10-29T08:07:03.360Z",
-      "outcome": { "type": "code", "code": 1 }
+      "outcome": { "type": "code", "code": 1 },
+      "summary": "the source answered 503"
     }
   ]
 }
@@ -109,6 +127,8 @@ never create the state directory.
 `state` is `running`, `finished` (with `ended_at` and `outcome`), or `lost`.
 `outcome` is `code`, `signal`, `spawn_failed`, or `stopped` (ended by a signal
 after a stop request reached the recorder, as when the job is unloaded; not a
-failure of the job). `logs` returns
+failure of the job). A finished run may also carry `skipped: true`, a
+`summary`, and a `result_error`; each is omitted when absent, and older
+versions never send them (see [run results](results.md)). `logs` returns
 `{"type":"logs","run":{…},"output":"…","truncated":false}`; a job without
 recorded runs fails with `not_found`.

@@ -1,5 +1,6 @@
 //! What the supervisor last observed and whether that needs the operator.
 use super::Activation;
+use crate::runs::Verdict;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
@@ -67,7 +68,15 @@ pub enum Health {
     Unknown,
 }
 impl Health {
-    pub fn assess(activation: Option<&Activation>, observation: &Observation) -> Self {
+    /// `verdict` is what the newest recorded run that says whether the job
+    /// works said. Recorded runs know about skips and requested stops, so the
+    /// verdict decides over launchd's last exit; without one, launchd's
+    /// observation does.
+    pub fn assess(
+        activation: Option<&Activation>,
+        observation: &Observation,
+        verdict: Option<Verdict>,
+    ) -> Self {
         let Some(activation) = activation else {
             return Self::Invalid;
         };
@@ -75,12 +84,21 @@ impl Health {
             Observation::Unavailable => Self::Unknown,
             Observation::Unloaded => Self::Unloaded,
             Observation::Loaded { pid: Some(_), .. } => Self::Running,
-            Observation::Loaded { last_exit, .. } => match (activation, last_exit) {
-                (_, Some(exit)) if !exit.succeeded() => Self::Failing,
-                (Activation::Service { always: true }, _) => Self::Down,
-                (_, Some(_)) => Self::Ok,
-                (_, None) => Self::Idle,
-            },
+            Observation::Loaded { last_exit, .. } => {
+                let verdict = verdict.or(last_exit.map(|exit| {
+                    if exit.succeeded() {
+                        Verdict::Succeeded
+                    } else {
+                        Verdict::Failed
+                    }
+                }));
+                match (activation, verdict) {
+                    (_, Some(Verdict::Failed)) => Self::Failing,
+                    (Activation::Service { always: true }, _) => Self::Down,
+                    (_, Some(Verdict::Succeeded)) => Self::Ok,
+                    (_, None) => Self::Idle,
+                }
+            }
         }
     }
     pub fn needs_attention(self) -> bool {
@@ -139,9 +157,70 @@ mod tests {
         ];
         for (activation, observation, expected) in cases {
             assert_eq!(
-                Health::assess(activation, &observation),
+                Health::assess(activation, &observation, None),
                 expected,
                 "{observation:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_recorded_verdict_decides_over_launchds_last_exit() {
+        let scheduled = Activation::Triggered { triggers: vec![] };
+        let service = Activation::Service { always: true };
+        let ok = Some(Exit::Code { code: 0 });
+        let stopped = Some(Exit::Signal { signal: 15 });
+        let cases = [
+            // A skip after a failed run exits 0, yet the job still fails.
+            (
+                &scheduled,
+                loaded(None, ok),
+                Some(Verdict::Failed),
+                Health::Failing,
+            ),
+            // A stop request after a good run is a signal to launchd only.
+            (
+                &scheduled,
+                loaded(None, stopped),
+                Some(Verdict::Succeeded),
+                Health::Ok,
+            ),
+            (
+                &scheduled,
+                loaded(None, None),
+                Some(Verdict::Succeeded),
+                Health::Ok,
+            ),
+            (
+                &scheduled,
+                loaded(Some(1), ok),
+                Some(Verdict::Failed),
+                Health::Running,
+            ),
+            (
+                &service,
+                loaded(None, ok),
+                Some(Verdict::Succeeded),
+                Health::Down,
+            ),
+            (
+                &service,
+                loaded(None, ok),
+                Some(Verdict::Failed),
+                Health::Failing,
+            ),
+            (
+                &scheduled,
+                Observation::Unloaded,
+                Some(Verdict::Failed),
+                Health::Unloaded,
+            ),
+        ];
+        for (activation, observation, verdict, expected) in cases {
+            assert_eq!(
+                Health::assess(Some(activation), &observation, verdict),
+                expected,
+                "{observation:?} {verdict:?}"
             );
         }
     }

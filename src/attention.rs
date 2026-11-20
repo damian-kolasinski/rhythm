@@ -64,7 +64,8 @@ pub struct Seen {
     pub attention: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs: Option<u64>,
-    /// The newest recorded run that had ended; a run in progress is not seen yet.
+    /// The newest recorded run that had ended and was not skipped; a run in
+    /// progress is not seen yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_finished: Option<i64>,
 }
@@ -132,7 +133,8 @@ pub fn current(reports: &[JobReport]) -> Vec<Item> {
 }
 
 /// Only what changed since `previous`. A job is reported again when it fails
-/// again, which launchd's run count or a newer finished run shows.
+/// again, which a newer finished run shows, or launchd's run count for a job
+/// without one. Skipped runs change neither.
 pub fn since(
     previous: &Snapshot,
     reports: &[JobReport],
@@ -144,10 +146,16 @@ pub fn since(
         if report.health.needs_attention() {
             let changed = match seen {
                 None => true,
+                // launchd counts skips as runs; recorded runs tell them apart,
+                // except for failures the recorder could not record.
                 Some(seen) => {
                     !seen.attention
-                        || seen.runs != runs(report)
-                        || (finished(report).is_some() && seen.last_finished != finished(report))
+                        || match finished(report) {
+                            Some(run) if !report.unrecorded_failure() => {
+                                seen.last_finished != Some(run)
+                            }
+                            _ => seen.runs != runs(report),
+                        }
                 }
             };
             if changed {
@@ -217,7 +225,7 @@ mod tests {
     use super::*;
     use crate::{
         jobs::{Activation, Job, Observation},
-        runs::{Outcome, RunState, Timestamp},
+        runs::{Outcome, RunReport, RunState, Timestamp},
     };
 
     fn report(label: &str, runs: u64, exit: i32, last_run: Option<i64>) -> JobReport {
@@ -238,6 +246,7 @@ mod tests {
             state: RunState::Finished {
                 ended_at: Timestamp(1),
                 outcome: Outcome::Code { code: exit },
+                report: RunReport::default(),
             },
         });
         status_report(job, run)
@@ -246,7 +255,7 @@ mod tests {
     fn status_report(job: Job, run: Option<Run>) -> JobReport {
         let json = serde_json::json!({
             "label": job.label,
-            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation),
+            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation, None),
             "activation": job.activation,
             "observation": job.observation,
             "recorded": job.recorded.is_some(),
@@ -326,7 +335,7 @@ mod in_progress {
     use super::*;
     use crate::{
         jobs::{Activation, Job, RunStore},
-        runs::{Outcome, Timestamp},
+        runs::{Outcome, RunReport, Timestamp},
     };
 
     fn report(runs: u64, last: (i64, RunState)) -> JobReport {
@@ -342,7 +351,7 @@ mod in_progress {
         };
         let json = serde_json::json!({
             "label": "job",
-            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation),
+            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation, None),
             "activation": job.activation,
             "observation": job.observation,
             "recorded": true,
@@ -355,6 +364,7 @@ mod in_progress {
         RunState::Finished {
             ended_at: Timestamp(1),
             outcome: Outcome::Code { code },
+            report: RunReport::default(),
         }
     }
 
