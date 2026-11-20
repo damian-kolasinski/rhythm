@@ -1,0 +1,3 @@
+com.example.scan has not reported any problems. Jobs list them in their result; see `rhythm skill show results`.
+---
+com.example.scan has no open problems (reported by run 7, 10m ago).

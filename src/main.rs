@@ -6,12 +6,13 @@ use rhythm::{
     attention_render,
     attention_store::AttentionStore,
     authoring::{self, Added, Adoption, Caller, NewJob, OWNED_PREFIX, Recorder},
-    history_render,
+    findings_render, history_render,
     jobs::Label,
     kick::{self, KickResponse},
     kick_render,
     launchd::Launchd,
     ledger::{self, Ledger},
+    open_findings,
     operation_error::{self, Error},
     recorder::{self, Recording},
     recorder_link,
@@ -232,6 +233,13 @@ enum Commands {
         /// List every skipped run on its own line.
         #[arg(long)]
         all: bool,
+        /// Read another machine over ssh.
+        #[arg(long)]
+        host: Option<String>,
+    },
+    /// List the problems a job reports as open now, from its newest result that listed them.
+    Findings {
+        label: String,
         /// Read another machine over ssh.
         #[arg(long)]
         host: Option<String>,
@@ -581,6 +589,15 @@ fn main() -> ExitCode {
                     history_render::Skips::Collapse
                 };
                 history_render::render(history, Timestamp::now(), &chrono::Local, skips)
+            })
+        }
+        Commands::Findings { label, host } => {
+            let result = authoring::resolve(&label).and_then(|label| match remote(host)? {
+                Some(host) => Ssh::system().call(&host, &["findings", label.as_str()]),
+                None => open_findings::findings(local_ledger(cli.data_dir)?.as_ref(), &label),
+            });
+            respond(json, result, |findings| {
+                findings_render::render(findings, Timestamp::now())
             })
         }
         Commands::Logs {

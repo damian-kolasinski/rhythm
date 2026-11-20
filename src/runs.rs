@@ -1,6 +1,6 @@
 //! Recorded runs of a job: when each started, how it ended, what it reported
 //! about itself, and the JSON contract.
-use crate::terminal_text::clean;
+use crate::{findings::RunFindings, terminal_text::clean};
 use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::DeserializeOwned};
 use std::fmt;
@@ -83,6 +83,14 @@ pub struct RunReport {
         deserialize_with = "lenient"
     )]
     pub result_error: Option<ResultError>,
+    /// How the run changed the open problems, when it stated them; see
+    /// [`crate::findings::OpenSet::after`].
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub findings: Option<RunFindings>,
 }
 
 /// An optional value from another machine, absent when this version does not
@@ -92,6 +100,20 @@ pub fn lenient<'de, D: Deserializer<'de>, T: DeserializeOwned>(
 ) -> Result<Option<T>, D::Error> {
     let value = Option::<serde_json::Value>::deserialize(deserializer)?;
     Ok(value.and_then(|v| T::deserialize(v).ok()))
+}
+
+/// A list from another machine without the entries this version cannot read.
+pub fn lenient_list<'de, D: Deserializer<'de>, T: DeserializeOwned>(
+    deserializer: D,
+) -> Result<Vec<T>, D::Error> {
+    let values = match serde_json::Value::deserialize(deserializer)? {
+        serde_json::Value::Array(values) => values,
+        _ => vec![],
+    };
+    Ok(values
+        .into_iter()
+        .filter_map(|v| T::deserialize(v).ok())
+        .collect())
 }
 
 /// Every summary, including one from another machine, is cleaned and shortened.
@@ -185,6 +207,8 @@ pub struct RecentRuns {
     pub last_skip: Option<Run>,
     /// What the newest run that says whether the job works said.
     pub verdict: Option<Verdict>,
+    /// Problems open as of the newest run that stated them.
+    pub open_findings: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,10 +347,19 @@ mod tests {
                     skipped: true,
                     summary: Summary::new("nothing new"),
                     result_error: Some(ResultError::UnsupportedVersion),
+                    findings: serde_json::from_value(serde_json::json!({
+                        "open": 1,
+                        "new": ["rhythm:result"],
+                        "resolved": 2,
+                        "dropped": 3
+                    }))
+                    .unwrap(),
                 },
             },
         };
         let json = serde_json::to_value(&run).unwrap();
+        assert_eq!(json["findings"]["resolved"], 2);
+        assert_eq!(json["findings"]["open"], 1);
         assert_eq!(json["skipped"], true);
         assert_eq!(json["summary"], "nothing new");
         assert_eq!(json["result_error"], "unsupported_version");

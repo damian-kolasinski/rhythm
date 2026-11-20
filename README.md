@@ -23,7 +23,8 @@ rhythm skill setup               # teach Claude Code, Codex, and OpenCode to use
 
 - [Status](docs/status.md): states, other machines, and the JSON contract.
 - [Recorded runs](docs/runs.md): the recorder, history, output, and retention.
-- [Run results](docs/results.md): let a job report a skip or a summary of its run.
+- [Run results](docs/results.md): let a job report a skip, a summary of its
+  run, and the problems it found.
 - [Creating and adopting jobs](docs/authoring.md): `add`, `adopt`, `remove`, `kick`.
 - [Attention and notifications](docs/attention.md): failure notifications and
   what broke since an agent last looked.

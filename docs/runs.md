@@ -27,6 +27,7 @@ rhythm history com.example.scan              # newest first, 20 by default
 rhythm history com.example.scan --all        # each skipped run on its own row
 rhythm logs com.example.scan                 # newest run's output
 rhythm logs com.example.scan --run 42        # a specific run
+rhythm findings com.example.scan             # problems the job reports open now
 rhythm --json history com.example.scan --limit 100
 rhythm logs com.example.scan --host devbox   # another machine over ssh
 ```
@@ -37,7 +38,9 @@ A job can also say that a run checked and had nothing to do, or describe it
 in one line, through the result file named by `RHYTHM_RESULT`; see [run
 results](results.md). `history` puts consecutive skipped runs on one row, as
 in `skipped ×12 since 11:17: nothing new`, and shows a run's summary after its
-outcome, as in `exit 0: synced 3 new items`. `--limit` counts runs that were
+outcome, as in `exit 0: synced 3 new items`. A job can also list the
+[problems it found](results.md#findings); `history` shows how each run changed
+them, as in `exit 0, +1 problem, 1 resolved`. `--limit` counts runs that were
 not skipped; the skipped runs among and after them come along. `logs` without
 `--run` shows the newest run that was not skipped.
 
@@ -91,6 +94,7 @@ sequences replaced; `truncated` says earlier output is not included. Each job
 keeps its newest 100 runs that were not skipped and its newest 20 skipped
 runs; older finished runs and their output are removed as runs start and
 finish.
+The newest run that stated the job's open problems is kept however old it is.
 Unfinished runs are kept for seven days, as they may still be running. Output
 can contain sensitive data and never leaves the state directory except through
 `logs`.
@@ -128,7 +132,9 @@ never create the state directory.
 `outcome` is `code`, `signal`, `spawn_failed`, or `stopped` (ended by a signal
 after a stop request reached the recorder, as when the job is unloaded; not a
 failure of the job). A finished run may also carry `skipped: true`, a
-`summary`, and a `result_error`; each is omitted when absent, and older
+`summary`, a `result_error`, and a summary of the `findings` it stated (open
+count, new keys, and how many were resolved or dropped); each is omitted
+when absent, and older
 versions never send them (see [run results](results.md)). `logs` returns
 `{"type":"logs","run":{…},"output":"…","truncated":false}`; a job without
 recorded runs fails with `not_found`.

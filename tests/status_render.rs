@@ -21,13 +21,14 @@ fn golden(name: &str, actual: &str) {
 fn job(label: &str, activation: Option<Activation>, observation: Observation) -> JobReport {
     JobReport {
         label: label.into(),
-        health: Health::assess(activation.as_ref(), &observation, None),
+        health: Health::assess(activation.as_ref(), &observation, None, 0),
         activation,
         observation,
         recorded: false,
         last_run: None,
         last_skip: None,
         verdict: None,
+        open_findings: 0,
         run_store: None,
     }
 }
@@ -243,7 +244,7 @@ fn renders_the_newest_real_run_and_a_skip_that_followed_it() {
             triggers: vec![Trigger::Interval { seconds: 900 }],
         });
         JobReport {
-            health: Health::assess(activation.as_ref(), &observation, verdict),
+            health: Health::assess(activation.as_ref(), &observation, verdict, 0),
             recorded: true,
             last_run,
             last_skip: Some(run(9, 4 * MINUTE, 0, true)),
@@ -270,5 +271,73 @@ fn renders_the_newest_real_run_and_a_skip_that_followed_it() {
             NOW,
             false,
         ),
+    );
+}
+
+#[test]
+fn renders_flagged_jobs_with_their_open_problems_first() {
+    const MINUTE: i64 = 60_000;
+    let run = |id, ago: i64, code, skipped| Run {
+        id,
+        label: "com.example.check".into(),
+        started_at: Timestamp(NOW.0 - ago - 1000),
+        state: RunState::Finished {
+            ended_at: Timestamp(NOW.0 - ago),
+            outcome: Outcome::Code { code },
+            report: RunReport {
+                skipped,
+                ..RunReport::default()
+            },
+        },
+    };
+    let checked = |label: &str, observation, last_run: Run, last_skip, open_findings| {
+        let activation = Some(daily(8, 7));
+        let verdict = last_run.state.verdict();
+        JobReport {
+            health: Health::assess(activation.as_ref(), &observation, verdict, open_findings),
+            recorded: true,
+            last_run: Some(last_run),
+            last_skip,
+            verdict,
+            open_findings,
+            ..job(label, activation, observation)
+        }
+    };
+    let ok = || loaded(None, Some(Exit::Code { code: 0 }));
+    let jobs = vec![
+        checked(
+            "com.example.lint",
+            loaded(None, Some(Exit::Code { code: 1 })),
+            run(7, 2 * 60 * MINUTE, 1, false),
+            None,
+            1,
+        ),
+        checked(
+            "com.example.check",
+            ok(),
+            run(5, 3 * 60 * MINUTE, 0, false),
+            Some(run(6, 4 * MINUTE, 0, true)),
+            2,
+        ),
+        checked(
+            "com.example.audit",
+            loaded(Some(4242), Some(Exit::Code { code: 0 })),
+            run(3, 60 * MINUTE, 0, false),
+            None,
+            1,
+        ),
+        checked(
+            "com.example.clean",
+            ok(),
+            run(2, 5 * MINUTE, 0, false),
+            None,
+            0,
+        ),
+    ];
+    golden(
+        "status-findings",
+        &(render(&[local(jobs.clone())], NOW, false)
+            + "---\n"
+            + &render(&[local(jobs)], NOW, true)),
     );
 }

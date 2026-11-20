@@ -589,3 +589,93 @@ fn a_recorded_job_fails_until_a_real_run_succeeds_however_often_it_skips() {
     );
     assert_eq!(report().health, Health::Ok);
 }
+
+#[test]
+fn a_recorded_job_with_open_problems_is_flagged_here_and_from_afar() {
+    use rhythm::{
+        findings::{self, OpenSet, Said},
+        jobs::{Label, RunStore},
+        ledger::{self, Ledger},
+        private_storage::Root,
+        runs::{Outcome, RunReport, Timestamp},
+    };
+    let f = Fixture::new();
+    let state = f.path().join("state");
+    f.define(
+        "a.plist",
+        "com.example.check",
+        &format!(
+            "<key>ProgramArguments</key><array><string>/opt/bin/rhythm</string><string>--data-dir</string><string>{}</string><string>run</string><string>com.example.check</string><string>--</string><string>/bin/true</string></array>",
+            state.display()
+        ),
+    );
+    f.observe(
+        "gui",
+        "com.example.check",
+        "\truns = 2\n\tlast exit code = 0\n",
+    );
+    let ledger = Ledger::open(Root::open(state.clone()).unwrap(), ledger::READER_WAIT).unwrap();
+    let label: Label = "com.example.check".parse().unwrap();
+    let run = |keys: &[&str]| {
+        let listed: Vec<_> = keys
+            .iter()
+            .map(|k| serde_json::json!({"key": k, "title": format!("{k} broke")}))
+            .collect();
+        let said = Said::Readable(Some(findings::parse(&serde_json::json!(listed)).unwrap()));
+        let previous = ledger.open_findings(label.as_str()).unwrap();
+        let open = OpenSet::after(previous.as_ref().map(|s| &s.set), said, Timestamp(2000));
+        let id = ledger.start(&label, 1, Timestamp(1000)).unwrap();
+        ledger
+            .finish_stating(
+                id,
+                Timestamp(2000),
+                Outcome::Code { code: 0 },
+                &RunReport::default(),
+                open.as_ref(),
+            )
+            .unwrap();
+    };
+    let ledgers = |_: &RunStore| Ledger::open_existing(Root::open(state.clone()).unwrap()).unwrap();
+    let report = || status::jobs(&f.launchd(), &ledgers).unwrap().remove(0);
+    run(&["a", "b"]);
+    let flagged = report();
+    assert_eq!(
+        (flagged.health, flagged.open_findings),
+        (Health::Flagged, 2)
+    );
+    let json = serde_json::to_value(&flagged).unwrap();
+    assert_eq!(json["health"], "flagged");
+    assert_eq!(json["open_findings"], 2);
+
+    // Another machine's count flags its job; an older Rhythm sends none.
+    let mut older = json.clone();
+    older["label"] = "com.example.older".into();
+    older.as_object_mut().unwrap().remove("open_findings");
+    fs::write(
+        f.path().join("remote-response"),
+        serde_json::json!({
+            "type": "status",
+            "hosts": [{"host": "local", "jobs": [json, older]}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    command_fixture::write(&f.path().join("ssh"), SSH);
+    let ssh = Ssh::at_boundary(f.path().join("ssh"), Duration::from_secs(5));
+    let response = status::gather(&[Target::parse("good").unwrap()], || Ok(vec![]), &ssh);
+    let HostOutcome::Jobs { jobs } = &response.hosts[0].outcome else {
+        panic!("{response:?}")
+    };
+    let health: Vec<Health> = jobs.iter().map(|j| j.health).collect();
+    assert_eq!(health, [Health::Flagged, Health::Ok]);
+
+    run(&[]);
+    let clear = report();
+    assert_eq!((clear.health, clear.open_findings), (Health::Ok, 0));
+    assert!(
+        serde_json::to_value(&clear)
+            .unwrap()
+            .get("open_findings")
+            .is_none()
+    );
+}

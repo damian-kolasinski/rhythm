@@ -1,0 +1,15 @@
+dev.rhythm.check has 2 problems open (reported by run 42, 3h ago):
+
+! example-module: 2 tests broken by #123
+  open for 2d 5h · handled by the example team
+  https://example.com/pull/123
+  test_parse fails on empty input.
+
+  See the second commit.
+  key regression/example-module@1a2b3c4d
+
+! The job's result could not be read (invalid)
+  open for 3h
+  key rhythm:result
+
+The job listed 3 more beyond the first 100; they are not kept.

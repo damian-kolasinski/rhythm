@@ -278,6 +278,7 @@ fn pill(state: Health, kit: &Kit) -> El {
         Health::Invalid => ("Invalid", kit.c.danger.bg, kit.c.danger.fg),
         Health::Failing => ("Failing", kit.c.danger.bg, kit.c.danger.fg),
         Health::Down => ("Down", kit.c.warning.bg, kit.c.warning.fg),
+        Health::Flagged => ("Flagged", kit.c.warning.bg, kit.c.warning.fg),
         Health::Running => ("Running", kit.c.info.bg, kit.c.info.fg),
         Health::Ok => ("OK", kit.c.success.bg, kit.c.success.fg),
         Health::Idle => ("Idle", kit.c.layer_01, kit.c.text_muted),

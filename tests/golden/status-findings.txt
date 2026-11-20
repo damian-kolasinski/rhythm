@@ -1,0 +1,15 @@
+  JOB                SCHEDULE     STATE    LAST
+! com.example.lint   daily 08:07  failing  1 problem · exit 1, 2h ago
+! com.example.check  daily 08:07  flagged  2 problems · exit 0, 3h ago · skipped 4m ago
+! com.example.audit  daily 08:07  flagged  1 problem · pid 4242
+  com.example.clean  daily 08:07  ok       exit 0, 5m ago
+
+4 jobs, 3 need attention
+---
+  JOB                SCHEDULE     STATE    LAST
+[31m![0m com.example.lint   daily 08:07  [31mfailing[0m  1 problem · exit 1, 2h ago
+[33m![0m com.example.check  daily 08:07  [33mflagged[0m  2 problems · exit 0, 3h ago · skipped 4m ago
+[33m![0m com.example.audit  daily 08:07  [33mflagged[0m  1 problem · pid 4242
+  com.example.clean  daily 08:07  ok       exit 0, 5m ago
+
+4 jobs, [31m3 need attention[0m

@@ -1,5 +1,6 @@
 //! SQLite record of runs, shared by every recorder and reader on the machine.
 use crate::{
+    findings::{OpenSet, RunFindings, Stated},
     jobs::Label,
     operation_error::{Error, Result},
     private_storage::{self, Root},
@@ -15,9 +16,10 @@ use std::{
 };
 
 const FILE: &str = "ledger.sqlite3";
-/// Version 2 adds what runs report about themselves. Migrations only go
-/// forward: an older Rhythm refuses a newer ledger as `unsupported_schema`.
-const SCHEMA: i64 = 2;
+/// Version 2 adds what runs report about themselves, version 3 the findings
+/// they state. Migrations only go forward: an older Rhythm refuses a newer
+/// ledger as `unsupported_schema`.
+const SCHEMA: i64 = 3;
 const CREATE_1: &str = "CREATE TABLE IF NOT EXISTS runs (
                           id INTEGER PRIMARY KEY AUTOINCREMENT,
                           label TEXT NOT NULL,
@@ -31,8 +33,13 @@ const CREATE_1: &str = "CREATE TABLE IF NOT EXISTS runs (
 const MIGRATE_2: &str = "ALTER TABLE runs ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0;
                          ALTER TABLE runs ADD COLUMN summary TEXT;
                          ALTER TABLE runs ADD COLUMN result_error TEXT;";
-const COLUMNS: &str =
-    "id, label, started_at, recorder_pid, ended_at, outcome, skipped, summary, result_error";
+/// The open set as of the run, as JSON; NULL when the run left it as it was.
+const MIGRATE_3: &str = "ALTER TABLE runs ADD COLUMN findings TEXT;";
+const COLUMNS: &str = "id, label, started_at, recorder_pid, ended_at, outcome, skipped, summary, result_error, findings";
+/// Narrows a job's runs to the one that finished stating its open problems
+/// last. Statements count in the order runs end, so of two overlapping runs
+/// the one that ended later wins.
+const NEWEST_STATEMENT: &str = "AND findings IS NOT NULL ORDER BY ended_at DESC, id DESC LIMIT 1";
 const LOCK: &str = "recorder.lock";
 const OPEN_LOCK: &str = "ledger.lock";
 /// How long readers wait for a busy ledger.
@@ -82,8 +89,9 @@ impl Ledger {
             .map_err(|_| Error::StorageUnavailable)?;
         let steps = match version {
             SCHEMA => return Ok(()),
-            0 => [CREATE_1, MIGRATE_2].concat(),
-            1 => MIGRATE_2.to_owned(),
+            0 => [CREATE_1, MIGRATE_2, MIGRATE_3].concat(),
+            1 => [MIGRATE_2, MIGRATE_3].concat(),
+            2 => MIGRATE_3.to_owned(),
             _ => return Err(Error::UnsupportedSchema),
         };
         self.connection
@@ -117,6 +125,18 @@ impl Ledger {
         outcome: Outcome,
         report: &RunReport,
     ) -> Result<()> {
+        self.finish_stating(id, at, outcome, report, None)
+    }
+    /// [`Ledger::finish`] for a run that stated the job's open problems as
+    /// `open`; the report's summary of them follows from `open`.
+    pub fn finish_stating(
+        &self,
+        id: i64,
+        at: Timestamp,
+        outcome: Outcome,
+        report: &RunReport,
+        open: Option<&OpenSet>,
+    ) -> Result<()> {
         let skipped = RunState::Finished {
             ended_at: at,
             outcome,
@@ -126,14 +146,15 @@ impl Ledger {
         self.connection
             .execute(
                 "UPDATE runs SET ended_at = ?1, outcome = ?2, skipped = ?3, summary = ?4,
-                   result_error = ?5
-                 WHERE id = ?6 AND ended_at IS NULL",
+                   result_error = ?5, findings = ?6
+                 WHERE id = ?7 AND ended_at IS NULL",
                 params![
                     at.0,
                     serde_json::to_string(&outcome).unwrap(),
                     skipped,
                     report.summary.as_ref().map(Summary::as_str),
                     report.result_error.map(ResultError::code),
+                    open.map(|set| serde_json::to_string(set).unwrap()),
                     id
                 ],
             )
@@ -163,7 +184,18 @@ impl Ledger {
                     })
                 })?
                 .collect::<rusqlite::Result<_>>()?;
-            let expired = retention::expired(&stored, at);
+            let stating = self
+                .connection
+                .query_row(
+                    &format!(
+                        "SELECT id FROM runs
+                         WHERE label = (SELECT label FROM runs WHERE id = ?1) {NEWEST_STATEMENT}"
+                    ),
+                    [id],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let expired = retention::expired(&stored, at, stating);
             for old in &expired {
                 self.connection
                     .execute("DELETE FROM runs WHERE id = ?1", [old])?;
@@ -235,12 +267,40 @@ impl Ledger {
         runs.retain(|r| r.state.failed());
         Ok(runs)
     }
+    /// The open set as the last run of the job to finish stating one left
+    /// it. A statement that cannot be read counts as none.
+    pub fn open_findings(&self, label: &str) -> Result<Option<Stated>> {
+        let row = self
+            .connection
+            .query_row(
+                &format!(
+                    "SELECT id, ended_at, findings FROM runs WHERE label = ?1 {NEWEST_STATEMENT}"
+                ),
+                [label],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|_| Error::StorageUnavailable)?;
+        Ok(row.and_then(|(run, at, json)| {
+            Some(Stated {
+                run,
+                at: Timestamp(at),
+                set: serde_json::from_str(&json).ok()?,
+            })
+        }))
+    }
     /// The newest run, skipped or not.
     pub fn latest(&self, label: &str) -> Result<Option<Run>> {
         self.newest(label, "")
     }
-    /// The job's newest real run, a skip that followed it, and the newest
-    /// verdict on whether the job works.
+    /// The job's newest real run, a skip that followed it, the newest
+    /// verdict on whether the job works, and how many problems are open.
     pub fn recent(&self, label: &str) -> Result<RecentRuns> {
         // One snapshot, so a run finishing meanwhile cannot mix two states.
         let snapshot = self
@@ -253,11 +313,13 @@ impl Ledger {
         let verdict = self
             .newest_with_verdict(label, "")?
             .and_then(|run| run.state.verdict());
+        let open_findings = self.open_findings(label)?.map_or(0, |s| s.set.open.len());
         snapshot.commit().map_err(|_| Error::StorageUnavailable)?;
         Ok(RecentRuns {
             last_run,
             last_skip,
             verdict,
+            open_findings,
         })
     }
     fn newest(&self, label: &str, filter: &str) -> Result<Option<Run>> {
@@ -325,6 +387,10 @@ fn run(row: &Row, root: &Root) -> rusqlite::Result<Run> {
                 result_error: row
                     .get::<_, Option<String>>(8)?
                     .and_then(|code| ResultError::from_code(&code)),
+                findings: row
+                    .get::<_, Option<String>>(9)?
+                    .and_then(|json| serde_json::from_str::<OpenSet>(&json).ok())
+                    .map(|set| RunFindings::from(&set)),
             },
         },
         _ => {

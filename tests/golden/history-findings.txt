@@ -1,0 +1,9 @@
+  RUN  STARTED              DURATION  RESULT
+   27  2026-09-21 13:58:19      1.0s  exit 0, 2 resolved
+   26  2026-09-21 13:43:19      1.0s  skipped
+   25  2026-09-21 13:28:19      1.0s  skipped, 1 resolved
+   24  2026-09-21 13:13:19      1.0s  skipped
+   23  2026-09-21 12:58:19      1.0s  exit 0, +1 problem, result file invalid
+!  22  2026-09-21 12:43:19      1.0s  exit 1, +1 problem, 1 resolved
+   21  2026-09-21 12:28:19      1.0s  exit 0
+   20  2026-09-21 12:13:19      1.0s  exit 0, +2 problems

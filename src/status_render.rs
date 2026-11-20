@@ -1,5 +1,6 @@
 //! Terminal rendering of a status response.
 use crate::{
+    findings_render,
     jobs::{Health, Observation},
     runs::{RunState, Timestamp},
     status::{HostOutcome, HostStatus, JobReport},
@@ -60,6 +61,7 @@ fn table(out: &mut String, jobs: &[JobReport], now: Timestamp, paint: Paint) {
     let line = |out: &mut String, marker: &str, cells: &[String; 4], health: Option<Health>| {
         let state = format!("{:w$}", cells[2], w = widths[2]);
         let state = match health {
+            Some(Health::Flagged) => paint.yellow(&state),
             Some(h) if h.needs_attention() => paint.red(&state),
             Some(Health::Running) => paint.green(&state),
             Some(Health::Unloaded) => paint.dim(&state),
@@ -78,7 +80,9 @@ fn table(out: &mut String, jobs: &[JobReport], now: Timestamp, paint: Paint) {
     };
     line(out, " ", &header, None);
     for (job, row) in jobs.iter().zip(&rows) {
-        let marker = if job.health.needs_attention() {
+        let marker = if job.health == Health::Flagged {
+            paint.yellow("!")
+        } else if job.health.needs_attention() {
             paint.red("!")
         } else {
             " ".to_owned()
@@ -102,9 +106,18 @@ fn table(out: &mut String, jobs: &[JobReport], now: Timestamp, paint: Paint) {
     .unwrap();
 }
 
+/// The job's open problems, if any, then what it last did.
+fn detail(job: &JobReport, now: Timestamp) -> String {
+    let last = activity(job, now);
+    match job.open_findings {
+        0 => last,
+        n => format!("{} · {last}", findings_render::problems(n)),
+    }
+}
+
 /// Recorded runs say when; launchd alone only knows the last exit. The newest
 /// real run comes first, then a skip that followed it.
-fn detail(job: &JobReport, now: Timestamp) -> String {
+fn activity(job: &JobReport, now: Timestamp) -> String {
     let recorded = job
         .last_run
         .as_ref()
@@ -164,6 +177,9 @@ impl Paint {
     }
     fn red(self, text: &str) -> String {
         self.wrap("31", text)
+    }
+    fn yellow(self, text: &str) -> String {
+        self.wrap("33", text)
     }
     fn green(self, text: &str) -> String {
         self.wrap("32", text)

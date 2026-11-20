@@ -6,12 +6,13 @@
 //! named in its environment; see [`run_result`].
 use crate::{
     failure_notice::Notice,
+    findings::{OpenSet, RunFindings, Said},
     jobs::Label,
     ledger::{Ledger, RunLock},
     notifier::Notifier,
     operation_error::Result,
     run_output::OutputLog,
-    run_result,
+    run_result::{self, Collected},
     runs::{Outcome, RunReport, RunState, Timestamp},
 };
 use std::{
@@ -158,6 +159,7 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
                     outcome: Outcome::SpawnFailed,
                     report,
                 },
+                None,
             );
             eprintln!("rhythm: the command could not be started");
             std::process::exit(exit_code_for(&error));
@@ -200,11 +202,19 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
         outcome => outcome,
     };
     // The command has exited, so reading its bounded result file cannot hold it up.
-    let report = dir
+    let collected = dir
         .as_deref()
-        .map_or_else(RunReport::default, run_result::collect);
+        .map_or_else(Collected::nothing, run_result::collect);
     let ended_at = Timestamp::now();
-    if ledger.finish(id, ended_at, outcome, &report).is_err() {
+    let stated = open_findings(&ledger, &label, collected.findings, ended_at);
+    let report = RunReport {
+        findings: stated.as_ref().map(RunFindings::from),
+        ..collected.report
+    };
+    if ledger
+        .finish_stating(id, ended_at, outcome, &report, stated.as_ref())
+        .is_err()
+    {
         eprintln!("rhythm: the outcome of this run could not be recorded");
     }
     notify(
@@ -216,6 +226,7 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
             outcome,
             report,
         },
+        stated.as_ref(),
     );
     if open > 0 {
         // Descendants still hold the pipes. Closing them would kill those
@@ -230,14 +241,26 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
     exit_as(outcome)
 }
 
-/// Tells the operator when the job starts failing or recovers. A run ended by
-/// a stop request is not a failure of the job, and a skip is neither.
-fn notify(ledger: &Ledger, label: &Label, id: i64, run: &RunState) {
+/// The open set after this run, which follows from the job's current one.
+/// When that cannot be read, the run states nothing rather than report every
+/// open problem as new.
+fn open_findings(ledger: &Ledger, label: &Label, said: Said, at: Timestamp) -> Option<OpenSet> {
+    if said == Said::Nothing {
+        return None;
+    }
+    let previous = ledger.open_findings(label.as_str()).ok()?;
+    OpenSet::after(previous.as_ref().map(|s| &s.set), said, at)
+}
+
+/// Tells the operator when the job starts failing or recovers, and when its
+/// open problems change. A run ended by a stop request is not a failure of
+/// the job, and a skip is neither.
+fn notify(ledger: &Ledger, label: &Label, id: i64, run: &RunState, findings: Option<&OpenSet>) {
     if STOPPED.load(Ordering::SeqCst) {
         return;
     }
     let previous = ledger.previous_finished(label.as_str(), id).ok().flatten();
-    if let Some(notice) = Notice::after(previous.as_ref().map(|r| &r.state), run) {
+    if let Some(notice) = Notice::after(previous.as_ref().map(|r| &r.state), run, findings) {
         Notifier::from_environment().deliver(
             &notice.title(label.as_str()),
             &notice.message(label.as_str()),
