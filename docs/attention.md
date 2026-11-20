@@ -1,8 +1,8 @@
 # Attention and notifications
 
 Background work fails quietly. Rhythm tells the operator when a recorded job
-starts failing, and tells the next agent session what broke since it last
-looked.
+starts failing or reports new problems, and tells the next agent session what
+broke since it last looked.
 
 ## Notifications
 
@@ -15,6 +15,13 @@ was asked to stop, as when it is unloaded or the user logs out, is recorded as
 `stopped` and is neither a failure nor a recovery; nor are lost runs, nor
 runs the job reported as [skipped](results.md), which are also passed over
 when deciding whether the next run is a change.
+
+A job that reports [findings](results.md#findings) also notifies when a run
+opens new problems, as in `dev.rhythm.check found 2 problems:
+example-module: 2 tests broken, +1 more. See rhythm findings check`, and when
+its last open problem is resolved. Problems reported again stay quiet. One run
+posts at most one notification: a failure first, then new problems, then a
+recovery, then an empty open set.
 
 Delivery never delays the job. It is configured in the job's own environment,
 for example with `rhythm add --env`:
@@ -46,7 +53,8 @@ look:
   recorded run that was not skipped shows, or launchd's run count for a job
   without recorded runs or with failures the recorder could not record;
 - a recorded job that failed and recovered in between, which would otherwise
-  go unseen.
+  go unseen;
+- problems a job opened, and problems it resolved, since that look.
 
 Each consumer's last look is kept privately in the state directory, so two
 agent tools never take each other's news. A run still in progress is not part
@@ -63,6 +71,8 @@ silent; a person in a terminal sees `Nothing needs attention.`
 Background jobs need attention:
 ! dev.rhythm.report failed: exit 1, 2h ago. See `rhythm logs report`.
 ~ dev.rhythm.sync recovered after 2 failed runs since last check (runs 41–43). See `rhythm history sync`.
+! dev.rhythm.check found 1 new problem: example-module: 2 tests broken by #123. See `rhythm findings check`.
+~ dev.rhythm.links resolved 2 problems since last check: docs/setup links to a removed page, +1 more.
 ! devbox: com.example.watch failed: signal 9. Record its runs by running `rhythm adopt com.example.watch` there.
 ```
 
@@ -71,7 +81,15 @@ checked. JSON has the same per-host shape as `status`:
 `{"type":"attention","hosts":[{"host":"local","items":[…]}]}`, where each item
 has `label`, `health`, and, when known, `last_exit`, `last_run`, and
 `recovered_from` (`count` of failed or lost runs with the `first` and `last`).
-Hints for another machine include its `--host`.
+Items about problems carry `findings` (every open problem, without
+`--since-last-seen`), `new_findings` and `resolved_findings` (`key` and
+`title`), and `failure_seen: true` when the job's failure was reported in an
+earlier look and the item is there for its problems. Without
+`--since-last-seen`, a flagged job reads `! dev.rhythm.check has 2 open
+problems: …`. These fields are optional, and entries this version cannot
+read are left out, so a newer machine's items still parse. A version from
+before findings cannot read the `flagged` state, so update the machine you
+check from first. Hints for another machine include its `--host`.
 
 ## Session hooks
 

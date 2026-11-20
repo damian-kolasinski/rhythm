@@ -3,6 +3,7 @@ use rhythm::{
     attention::{self, AttentionHost, AttentionOutcome, AttentionResponse, Consumer, Item},
     attention_render::render,
     attention_store::AttentionStore,
+    findings::{self, OpenSet, Said},
     jobs::{Health, Label, RunStore},
     launchd::Launchd,
     ledger::{self, Ledger},
@@ -72,6 +73,28 @@ impl Fixture {
             ..RunReport::default()
         };
         self.record_reported(label, 0, report);
+    }
+    /// A run whose result listed `problems`, as `(key, title)`.
+    fn report_findings(&self, label: &str, code: i32, problems: &[(&str, &str)]) {
+        let listed: Vec<_> = problems
+            .iter()
+            .map(|(key, title)| serde_json::json!({"key": key, "title": title}))
+            .collect();
+        let said = Said::Readable(Some(findings::parse(&serde_json::json!(listed)).unwrap()));
+        let ledger = Ledger::open(self.state(), ledger::READER_WAIT).unwrap();
+        let previous = ledger.open_findings(label).unwrap();
+        let open = OpenSet::after(previous.as_ref().map(|s| &s.set), said, NOW);
+        let label: Label = label.parse().unwrap();
+        let id = ledger.start(&label, 1, Timestamp(NOW.0 - 60_000)).unwrap();
+        ledger
+            .finish_stating(
+                id,
+                Timestamp(NOW.0 - 50_000),
+                Outcome::Code { code },
+                &RunReport::default(),
+                open.as_ref(),
+            )
+            .unwrap();
     }
     fn record_reported(&self, label: &str, code: i32, report: RunReport) {
         let ledger = Ledger::open(self.state(), ledger::READER_WAIT).unwrap();
@@ -249,6 +272,10 @@ fn renders_attention_as_actionable_lines_and_silence_as_nothing() {
         last_exit: Some(rhythm::jobs::Exit::Signal { signal: 9 }),
         last_run: None,
         recovered_from: None,
+        failure_seen: false,
+        findings: vec![],
+        new_findings: vec![],
+        resolved_findings: vec![],
     };
     let response = AttentionResponse {
         hosts: vec![
@@ -278,6 +305,135 @@ fn renders_attention_as_actionable_lines_and_silence_as_nothing() {
         }],
     };
     assert_eq!(render(&quiet, NOW), "");
+}
+
+fn findings_of<T>(list: &[T], key: impl Fn(&T) -> &str) -> Vec<&str> {
+    list.iter().map(key).collect()
+}
+
+#[test]
+fn consumers_hear_when_problems_open_and_when_they_are_resolved() {
+    let f = Fixture::new();
+    f.define("dev.rhythm.check");
+    f.observe("dev.rhythm.check", 1, 0);
+    f.report_findings("dev.rhythm.check", 0, &[("a", "a broke"), ("b", "b broke")]);
+
+    let (current, _) = attention::look(&f.launchd(), &ledgers, None).unwrap();
+    assert_eq!(labels(&current), [("dev.rhythm.check", Health::Flagged)]);
+    assert_eq!(
+        findings_of(&current[0].findings, |f| f.problem.key.as_str()),
+        ["a", "b"]
+    );
+
+    let items = f.look("agent");
+    assert_eq!(
+        findings_of(&items[0].new_findings, |f| f.problem.key.as_str()),
+        ["a", "b"]
+    );
+    assert!(items[0].findings.is_empty());
+    assert!(f.look("agent").is_empty());
+
+    // Reported again, then one resolved and one new.
+    f.report_findings("dev.rhythm.check", 0, &[("b", "b broke"), ("a", "a broke")]);
+    assert!(f.look("agent").is_empty());
+    f.report_findings("dev.rhythm.check", 0, &[("b", "b broke"), ("c", "c broke")]);
+    // A run that says nothing about findings leaves them open.
+    f.record("dev.rhythm.check", 0);
+    let items = f.look("agent");
+    assert_eq!(
+        findings_of(&items[0].new_findings, |f| f.problem.key.as_str()),
+        ["c"]
+    );
+    assert_eq!(
+        findings_of(&items[0].resolved_findings, |r| r.title.as_str()),
+        ["a broke"]
+    );
+
+    f.report_findings("dev.rhythm.check", 0, &[]);
+    let items = f.look("agent");
+    assert_eq!(labels(&items), [("dev.rhythm.check", Health::Ok)]);
+    assert_eq!(
+        findings_of(&items[0].resolved_findings, |r| r.key.as_str()),
+        ["b", "c"]
+    );
+    assert!(f.look("agent").is_empty());
+}
+
+#[test]
+fn renders_findings_as_actionable_lines() {
+    let f = Fixture::new();
+    f.define("dev.rhythm.check");
+    f.define("com.example.lint");
+    f.observe("dev.rhythm.check", 1, 0);
+    f.observe("com.example.lint", 1, 1);
+    f.report_findings(
+        "dev.rhythm.check",
+        0,
+        &[("a", "example-module: 2 tests broken by #123")],
+    );
+    f.report_findings(
+        "com.example.lint",
+        1,
+        &[("x", "lint fails in example-module")],
+    );
+    let (current, _) = attention::look(&f.launchd(), &ledgers, None).unwrap();
+    f.look("agent");
+    f.report_findings(
+        "dev.rhythm.check",
+        0,
+        &[
+            ("b", "example-module: build broken"),
+            ("c", "docs: dead link"),
+            ("d", "docs: typo"),
+        ],
+    );
+    f.observe("com.example.lint", 1, 1);
+    f.report_findings(
+        "com.example.lint",
+        1,
+        &[
+            ("x", "lint fails in example-module"),
+            ("y", "format check fails"),
+        ],
+    );
+    let since = f.look("agent");
+    let response = AttentionResponse {
+        hosts: vec![
+            AttentionHost {
+                host: "local".into(),
+                outcome: AttentionOutcome::Items { items: current },
+            },
+            AttentionHost {
+                host: "devbox".into(),
+                outcome: AttentionOutcome::Items { items: since },
+            },
+        ],
+    };
+    golden("attention-findings", &render(&response, NOW));
+    // A flagged job whose problems this Rhythm could not read is no failure.
+    let unread = Item {
+        label: "dev.rhythm.check".into(),
+        health: Health::Flagged,
+        last_exit: Some(rhythm::jobs::Exit::Code { code: 0 }),
+        last_run: None,
+        recovered_from: None,
+        failure_seen: false,
+        findings: vec![],
+        new_findings: vec![],
+        resolved_findings: vec![],
+    };
+    let response = AttentionResponse {
+        hosts: vec![AttentionHost {
+            host: "local".into(),
+            outcome: AttentionOutcome::Items {
+                items: vec![unread],
+            },
+        }],
+    };
+    assert_eq!(
+        render(&response, NOW),
+        "Background jobs need attention:\n! dev.rhythm.check reports open problems. See `rhythm findings check`.\n"
+    );
 }
 
 #[test]

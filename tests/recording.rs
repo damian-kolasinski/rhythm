@@ -1,5 +1,6 @@
 #![cfg(unix)]
 use rhythm::{
+    findings::{self, OpenSet, Said},
     jobs::Label,
     ledger::{self, Ledger},
     private_storage::Root,
@@ -664,7 +665,7 @@ fn only_a_clean_exit_can_skip_and_any_run_can_summarize() {
             RunReport {
                 skipped: false,
                 summary: Summary::new("gave up"),
-                result_error: None,
+                ..RunReport::default()
             }
         )
     );
@@ -702,8 +703,19 @@ fn a_bad_result_file_is_noted_and_the_run_recorded_normally() {
         ),
     ] {
         assert!(f.record(&[], &script).status.success(), "{script}");
+        let (outcome, report) = finished_report(&f);
+        // The unread result is an open problem of its own.
+        let stated = report.findings.clone().unwrap();
+        assert_eq!(stated.open, 1, "{script}");
+        assert_eq!(open_keys(&f.json(&["findings", LABEL])), ["rhythm:result"]);
         assert_eq!(
-            finished_report(&f),
+            (
+                outcome,
+                RunReport {
+                    findings: None,
+                    ..report
+                }
+            ),
             (
                 Outcome::Code { code: 0 },
                 RunReport {
@@ -863,13 +875,273 @@ fn a_version_1_ledger_is_migrated_and_a_newer_one_refused() {
         .unwrap()
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .unwrap();
-    assert_eq!(version, 2);
+    assert_eq!(version, 3);
+    f.record(&[], &report(r#"{"version": 1, "findings": []}"#));
+    assert_eq!(f.json(&["findings", LABEL])["run"], 3);
 
     rusqlite::Connection::open(&path)
         .unwrap()
-        .execute_batch("PRAGMA user_version = 3")
+        .execute_batch("PRAGMA user_version = 4")
         .unwrap();
     let output = f.command(&["--json", "history", LABEL]).output().unwrap();
     let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
     assert_eq!(error["error"]["code"], "unsupported_schema");
+}
+
+fn open_keys(findings: &serde_json::Value) -> Vec<&str> {
+    findings["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["key"].as_str().unwrap())
+        .collect()
+}
+
+#[test]
+fn a_job_states_its_open_problems_and_rhythm_keeps_them_until_the_next_statement() {
+    let f = Fixture::new();
+    assert_eq!(
+        f.json(&["findings", LABEL]),
+        serde_json::json!({"type": "findings", "label": LABEL, "findings": []})
+    );
+    let ab = report(
+        r#"{"version": 1, "findings": [{"key": "a", "title": "a broke", "detail": "first\nsecond", "link": "https://example.com/a", "handled_by": "someone"}, {"key": "b", "title": "b broke"}]}"#,
+    );
+    f.record(&[], &ab);
+    let first = f.json(&["findings", LABEL]);
+    assert_eq!(open_keys(&first), ["a", "b"]);
+    assert_eq!(first["run"], 1);
+    assert_eq!(first["findings"][0]["detail"], "first\nsecond");
+    assert_eq!(first["findings"][0]["handled_by"], "someone");
+    let since = first["findings"][1]["first_seen"].clone();
+    assert_eq!(since, first["reported_at"]);
+
+    // Findings count even when the run fails.
+    f.record(
+        &[],
+        &format!(
+            "{}; exit 3",
+            report(r#"{"version": 1, "findings": [{"key": "b", "title": "b broke"}, {"key": "c", "title": "c broke"}]}"#)
+        ),
+    );
+    let second = f.json(&["findings", LABEL]);
+    assert_eq!(open_keys(&second), ["b", "c"]);
+    assert_eq!(second["findings"][0]["first_seen"], since);
+    let run = &f.json(&["history", LABEL])["runs"][0];
+    assert_eq!(run["findings"]["new"], serde_json::json!(["c"]));
+    assert_eq!(run["findings"]["resolved"], 1);
+
+    // A run without a result, or without a findings list, changes nothing.
+    f.record(&[], "true");
+    f.record(&[], &report(r#"{"version": 1, "summary": "checked"}"#));
+    assert_eq!(f.json(&["findings", LABEL])["run"], 2);
+
+    // A result Rhythm cannot read is a problem of its own, kept with the
+    // job's open ones until a readable result.
+    f.record(
+        &[],
+        &report(r#"{"version": 1, "findings": [{"key": "rhythm:mine", "title": "t"}]}"#),
+    );
+    let unread = f.json(&["findings", LABEL]);
+    assert_eq!(open_keys(&unread), ["rhythm:result", "b", "c"]);
+    assert_eq!(
+        unread["findings"][0]["title"],
+        "The job's result could not be read (invalid)"
+    );
+    assert_eq!(
+        f.json(&["history", LABEL])["runs"][0]["result_error"],
+        "invalid"
+    );
+    f.record(&[], &report(r#"{"version": 1}"#));
+    let readable = f.json(&["findings", LABEL]);
+    assert_eq!(open_keys(&readable), ["b", "c"]);
+    assert_eq!(readable["findings"][0]["first_seen"], since);
+
+    f.record(&[], &report(r#"{"version": 1, "findings": []}"#));
+    let text = f.command(&["findings", LABEL]).output().unwrap();
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.starts_with("com.example.job has no open problems (reported by run 7, "),
+        "{text}"
+    );
+    let history = f.command(&["history", LABEL]).output().unwrap();
+    let history = String::from_utf8(history.stdout).unwrap();
+    assert!(history.contains("exit 0, 2 resolved"), "{history}");
+    assert!(
+        history.contains("exit 3, +1 problem, 1 resolved"),
+        "{history}"
+    );
+}
+
+#[test]
+fn notifies_when_problems_open_and_when_none_are_left_once_per_run() {
+    let f = Fixture::new();
+    let notices = f.temp.path().join("notices");
+    let notifier = f.temp.path().join("notify");
+    std::fs::write(
+        &notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s | %s\\n' \"$1\" \"$2\" >> '{}'\n",
+            notices.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&notifier, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let run = |keys: &[&str], code: i32| {
+        let listed: Vec<String> = keys
+            .iter()
+            .map(|k| format!(r#"{{"key": "{k}", "title": "{k} broke"}}"#))
+            .collect();
+        let result = format!(r#"{{"version": 1, "findings": [{}]}}"#, listed.join(", "));
+        let script = format!("{}; exit {code}", report(&result));
+        f.command(&["run", LABEL, "--", "/bin/sh", "-c", &script])
+            .env_remove("RHYTHM_NOTIFY")
+            .env("RHYTHM_NOTIFY_COMMAND", &notifier)
+            .output()
+            .unwrap();
+    };
+    let expected = |lines: &[&str]| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let seen = std::fs::read_to_string(&notices).unwrap_or_default();
+            if seen.lines().collect::<Vec<_>>() == lines {
+                return;
+            }
+            assert!(Instant::now() < deadline, "notices: {seen:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    let found =
+        "com.example.job found 2 problems | a broke, +1 more. See rhythm findings com.example.job";
+    let failed = "com.example.job failed | exit 2. See rhythm logs com.example.job";
+    let recovered = "com.example.job recovered | The latest run succeeded.";
+    let resolved = "com.example.job has no open problems | Every problem it reported is resolved.";
+    run(&["a", "b"], 0);
+    run(&["b", "a"], 0);
+    expected(&[found]);
+    // The failure is the one notice of a run that also opened a problem.
+    run(&["a", "b", "c"], 2);
+    expected(&[found, failed]);
+    run(&["a", "b", "c"], 0);
+    expected(&[found, failed, recovered]);
+    run(&[], 0);
+    expected(&[found, failed, recovered, resolved]);
+    std::thread::sleep(Duration::from_millis(300));
+    expected(&[found, failed, recovered, resolved]);
+}
+
+#[test]
+fn the_run_that_stated_the_open_problems_outlives_retention() {
+    let f = Fixture::new();
+    f.record(
+        &[],
+        &report(r#"{"version": 1, "findings": [{"key": "a", "title": "a broke"}]}"#),
+    );
+    let ledger = f.ledger();
+    let label: rhythm::jobs::Label = LABEL.parse().unwrap();
+    for _ in 0..105 {
+        let id = ledger.start(&label, 1, Timestamp::now()).unwrap();
+        ledger
+            .finish(
+                id,
+                Timestamp::now(),
+                Outcome::Code { code: 0 },
+                &RunReport::default(),
+            )
+            .unwrap();
+    }
+    let findings = f.json(&["findings", LABEL]);
+    assert_eq!(
+        (findings["run"].as_i64(), open_keys(&findings)),
+        (Some(1), vec!["a"])
+    );
+    assert_eq!(
+        f.json(&["history", LABEL, "--limit", "1000"])["runs"]
+            .as_array()
+            .unwrap()
+            .len(),
+        101
+    );
+}
+
+#[test]
+fn statements_count_in_the_order_runs_end() {
+    let f = Fixture::new();
+    let ledger = f.ledger();
+    let label: rhythm::jobs::Label = LABEL.parse().unwrap();
+    let said = |keys: &[&str]| {
+        let listed: Vec<_> = keys
+            .iter()
+            .map(|k| serde_json::json!({"key": k, "title": format!("{k} broke")}))
+            .collect();
+        Said::Readable(Some(findings::parse(&serde_json::json!(listed)).unwrap()))
+    };
+    let finish = |id: i64, at: i64, keys: &[&str]| {
+        let previous = ledger.open_findings(LABEL).unwrap();
+        let open = OpenSet::after(previous.as_ref().map(|s| &s.set), said(keys), Timestamp(at));
+        ledger
+            .finish_stating(
+                id,
+                Timestamp(at),
+                Outcome::Code { code: 0 },
+                &RunReport::default(),
+                open.as_ref(),
+            )
+            .unwrap();
+    };
+    // A long run starts first; a quick one starts and ends inside it.
+    let long = ledger.start(&label, 1, Timestamp(1000)).unwrap();
+    let quick = ledger.start(&label, 1, Timestamp(2000)).unwrap();
+    finish(quick, 3000, &["a"]);
+    finish(long, 4000, &[]);
+    let open = ledger.open_findings(LABEL).unwrap().unwrap();
+    assert_eq!(
+        (open.run, open.set.open.len(), open.set.resolved),
+        (long, 0, 1)
+    );
+}
+
+#[test]
+fn a_version_2_ledger_gains_findings_and_a_damaged_statement_counts_as_none() {
+    let f = Fixture::new();
+    std::fs::create_dir(f.state()).unwrap();
+    std::fs::set_permissions(f.state(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = f.state().join("ledger.sqlite3");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        r#"CREATE TABLE runs (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             label TEXT NOT NULL,
+             started_at INTEGER NOT NULL,
+             recorder_pid INTEGER NOT NULL,
+             ended_at INTEGER,
+             outcome TEXT,
+             CHECK ((ended_at IS NULL) = (outcome IS NULL))
+           );
+           CREATE INDEX runs_by_label ON runs (label, id);
+           ALTER TABLE runs ADD COLUMN skipped INTEGER NOT NULL DEFAULT 0;
+           ALTER TABLE runs ADD COLUMN summary TEXT;
+           ALTER TABLE runs ADD COLUMN result_error TEXT;
+           INSERT INTO runs (label, started_at, recorder_pid, ended_at, outcome, summary)
+             VALUES ('com.example.job', 1000, 1, 2000, '{"type":"code","code":0}', 'kept');
+           PRAGMA user_version = 2;"#,
+    )
+    .unwrap();
+    drop(old);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    assert_eq!(f.json(&["history", LABEL])["runs"][0]["summary"], "kept");
+    f.record(
+        &[],
+        &report(r#"{"version": 1, "findings": [{"key": "a", "title": "a broke"}]}"#),
+    );
+    assert_eq!(open_keys(&f.json(&["findings", LABEL])), ["a"]);
+
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch("UPDATE runs SET findings = '{broken' WHERE id = 2")
+        .unwrap();
+    assert_eq!(open_keys(&f.json(&["findings", LABEL])), Vec::<&str>::new());
+    let history = f.json(&["history", LABEL]);
+    assert_eq!(history["runs"].as_array().unwrap().len(), 2);
+    assert!(history["runs"][0].get("findings").is_none());
 }

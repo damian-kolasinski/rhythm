@@ -1,5 +1,6 @@
 //! Golden tests for terminal history output. Set UPDATE_GOLDEN=1 to rewrite them.
 use rhythm::{
+    findings::{self, OpenSet, RunFindings, Said},
     history_render::{Skips, render},
     run_history::HistoryResponse,
     runs::{Outcome, ResultError, Run, RunReport, RunState, Summary, Timestamp},
@@ -42,7 +43,7 @@ fn skip(id: i64, started_ago: i64, summary: Option<&str>) -> Run {
     let report = RunReport {
         skipped: true,
         summary: summary.and_then(Summary::new),
-        result_error: None,
+        ..RunReport::default()
     };
     run(
         id,
@@ -165,5 +166,66 @@ fn lists_every_skip_when_asked() {
     golden(
         "history-skips-all",
         &render(&polling(), NOW, &chrono::Utc, Skips::List),
+    );
+}
+
+#[test]
+fn shows_how_each_run_changed_the_open_problems() {
+    const MINUTE: i64 = 60_000;
+    let listed = |keys: &[&str]| {
+        let list: Vec<_> = keys
+            .iter()
+            .map(|k| serde_json::json!({"key": k, "title": format!("{k} broke")}))
+            .collect();
+        Said::Readable(Some(findings::parse(&serde_json::json!(list)).unwrap()))
+    };
+    // Oldest first: each run's open set follows from the one before.
+    let said = [
+        (Outcome::Code { code: 0 }, false, listed(&["a", "b"])),
+        (Outcome::Code { code: 0 }, false, listed(&["a", "b"])),
+        (Outcome::Code { code: 1 }, false, listed(&["b", "c"])),
+        (
+            Outcome::Code { code: 0 },
+            false,
+            Said::Unreadable(ResultError::Invalid),
+        ),
+        (Outcome::Code { code: 0 }, true, Said::Nothing),
+        (Outcome::Code { code: 0 }, true, Said::Readable(None)),
+        (Outcome::Code { code: 0 }, true, Said::Nothing),
+        (Outcome::Code { code: 0 }, false, listed(&[])),
+    ];
+    let mut open: Option<OpenSet> = None;
+    let mut runs = vec![];
+    for (i, (outcome, skipped, said)) in said.into_iter().enumerate() {
+        let ago = (8 - i as i64) * 15 * MINUTE;
+        let at = Timestamp(NOW.0 - ago);
+        let findings = OpenSet::after(open.as_ref(), said, at);
+        if findings.is_some() {
+            open.clone_from(&findings);
+        }
+        let report = RunReport {
+            skipped,
+            result_error: (i == 3).then_some(ResultError::Invalid),
+            findings: findings.as_ref().map(RunFindings::from),
+            ..RunReport::default()
+        };
+        runs.push(run(
+            20 + i as i64,
+            ago + 1000,
+            reported(ago, outcome, report),
+        ));
+    }
+    runs.reverse();
+    golden(
+        "history-findings",
+        &render(
+            &HistoryResponse {
+                label: "com.example.scan".into(),
+                runs,
+            },
+            NOW,
+            &chrono::Utc,
+            Skips::Collapse,
+        ),
     );
 }

@@ -1,0 +1,8 @@
+Background jobs need attention:
+! com.example.lint failed: exit 1, 50s ago. See `rhythm logs com.example.lint`.
+! com.example.lint has 1 open problem: lint fails in example-module. See `rhythm findings com.example.lint`.
+! dev.rhythm.check has 1 open problem: example-module: 2 tests broken by #123. See `rhythm findings check`.
+! devbox: com.example.lint failed: exit 1, 50s ago. See `rhythm logs com.example.lint --host devbox`.
+! devbox: com.example.lint found 1 new problem: format check fails. See `rhythm findings com.example.lint --host devbox`.
+! devbox: dev.rhythm.check found 3 new problems: example-module: build broken, +2 more. See `rhythm findings check --host devbox`.
+~ devbox: dev.rhythm.check resolved 1 problem since last check: example-module: 2 tests broken by #123.

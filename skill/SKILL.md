@@ -15,12 +15,14 @@ rhythm status                      # every user launchd job, attention first
 rhythm attention                   # only what needs attention now
 rhythm history NAME                # recorded runs, newest first
 rhythm logs NAME                   # output of the newest run; --run ID for another
+rhythm findings NAME               # problems the job reports open now
 ```
 
 `NAME` is short for `dev.rhythm.NAME`; anything with a dot is a full label.
 `--host DEST` reads another machine over ssh (`status` and `attention` take
 it repeatedly). A job marked `!` needs attention: `failing`, `down` (a
-keep-alive job not running), or `invalid` (launchd cannot load it).
+keep-alive job not running), `invalid` (launchd cannot load it), or
+`flagged` (it works but reports open problems).
 
 Start with `rhythm status` to investigate a user LaunchAgent. In its JSON,
 `recorded: true` means the job uses Rhythm's recorder. Use `rhythm ui` when
@@ -65,12 +67,25 @@ A job that polls often and usually finds nothing to do should report those
 runs as skipped through `RHYTHM_RESULT`, so its real runs stay visible; see
 [run results](results.md).
 
+## When a job reports problems
+
+A job that checks something can list the problems open right now as
+`findings` in its result; Rhythm then marks it `flagged` and tells you when
+problems open or are resolved. `rhythm findings NAME` shows each open problem,
+how long it has been open, who handles it, and a link. Report what you find to
+the user; fix a problem only when asked. To make a job report findings, write
+the complete open set each run, with a stable `key` per problem:
+
+```json
+{"version": 1, "findings": [{"key": "broken-link/docs/setup", "title": "docs/setup links to a removed page"}]}
+```
+
 Tell the user about failures you find rather than silently retrying them.
 Each reference below has the details: `rhythm skill show NAME`.
 
 - `status`: states, other machines, and the JSON contract.
 - `runs`: the recorder, history, output, and retention.
-- `results`: let a job report a skip or a one-line summary of its run.
+- `results`: let a job report a skip, a one-line summary, and the problems it found.
 - `authoring`: `add`, `adopt`, `remove`, and `kick` in detail.
 - `attention`: notifications and `attention --since-last-seen`.
 - `agents`: the skill and session hook `rhythm skill setup` installs.

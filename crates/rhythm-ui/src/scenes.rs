@@ -144,6 +144,7 @@ fn routines(window: &mut Window) {
                     last_run,
                     last_skip: None,
                     verdict: None,
+                    open_findings: 0,
                     run_store: None,
                 };
                 Routine::Launchd {

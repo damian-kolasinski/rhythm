@@ -1,7 +1,9 @@
 //! What needs the operator now, and what is new since a consumer last looked:
-//! jobs that started or kept failing, and recorded failures that have since
-//! recovered and would otherwise go unseen.
+//! jobs that started or kept failing, recorded failures that have since
+//! recovered and would otherwise go unseen, and problems jobs opened or
+//! resolved.
 use crate::{
+    findings::{Change, Finding, Resolved},
     jobs::{Exit, Health, Observation, RunStore, Supervisor},
     ledger::Ledger,
     operation_error::{Error, Result},
@@ -44,6 +46,38 @@ pub struct Item {
     /// Failures since the last look of a job whose latest run succeeded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub recovered_from: Option<Failures>,
+    /// The job's failure was reported in an earlier look; the item is here
+    /// for its findings.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub failure_seen: bool,
+    /// Every problem open now, when listing everything that needs attention.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::runs::lenient_list"
+    )]
+    pub findings: Vec<Finding>,
+    /// Problems opened since the last look.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::runs::lenient_list"
+    )]
+    pub new_findings: Vec<Finding>,
+    /// Problems open at the last look that no longer are.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "crate::runs::lenient_list"
+    )]
+    pub resolved_findings: Vec<Resolved>,
+}
+
+/// Each job's open problems, by label, for jobs that have any.
+pub type OpenFindings = BTreeMap<String, Vec<Finding>>;
+
+fn open_of<'a>(open: &'a OpenFindings, report: &JobReport) -> &'a [Finding] {
+    open.get(&report.label).map_or(&[], Vec::as_slice)
 }
 
 /// Failed or lost runs, summarized so a long outage stays one line.
@@ -61,6 +95,7 @@ pub struct Snapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Seen {
+    /// The job was broken: invalid, failing, or down.
     pub attention: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runs: Option<u64>,
@@ -68,20 +103,24 @@ pub struct Seen {
     /// progress is not seen yet.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_finished: Option<i64>,
+    /// The problems open then, with their titles so a resolved one can be named.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub findings: Vec<Resolved>,
 }
 impl Snapshot {
-    /// What a look at `reports` saw, carrying forward what `previous` saw of
-    /// runs still in progress.
-    pub fn after(previous: &Snapshot, reports: &[JobReport]) -> Self {
+    /// What a look at `reports` and their `open` findings saw, carrying
+    /// forward what `previous` saw of runs still in progress.
+    pub fn after(previous: &Snapshot, reports: &[JobReport], open: &OpenFindings) -> Self {
         Self {
             jobs: reports
                 .iter()
                 .map(|r| {
                     let seen = Seen {
-                        attention: r.health.needs_attention(),
+                        attention: r.health.broken(),
                         runs: runs(r),
                         last_finished: finished(r)
                             .or_else(|| previous.jobs.get(&r.label).and_then(|s| s.last_finished)),
+                        findings: open_of(open, r).iter().map(Resolved::from).collect(),
                     };
                     (r.label.clone(), seen)
                 })
@@ -123,66 +162,90 @@ impl Consumer {
     }
 }
 
-/// Everything needing attention now.
-pub fn current(reports: &[JobReport]) -> Vec<Item> {
+/// Everything needing attention now, with each job's open problems.
+pub fn current(reports: &[JobReport], open: &OpenFindings) -> Vec<Item> {
     reports
         .iter()
         .filter(|r| r.health.needs_attention())
-        .map(|r| item(r, None))
+        .map(|r| Item {
+            findings: open_of(open, r).to_vec(),
+            ..item(r, None)
+        })
         .collect()
 }
 
 /// Only what changed since `previous`. A job is reported again when it fails
 /// again, which a newer finished run shows, or launchd's run count for a job
-/// without one. Skipped runs change neither.
+/// without one. Skipped runs change neither. Problems are reported when they
+/// open and when they are resolved, never again while they stay open.
 pub fn since(
     previous: &Snapshot,
     reports: &[JobReport],
+    open: &OpenFindings,
     failures_after: &dyn Fn(&JobReport, i64) -> Result<Vec<Run>>,
 ) -> Result<Vec<Item>> {
     let mut items = vec![];
     for report in reports {
         let seen = previous.jobs.get(&report.label);
-        if report.health.needs_attention() {
-            let changed = match seen {
-                None => true,
-                // launchd counts skips as runs; recorded runs tell them apart,
-                // except for failures the recorder could not record.
-                Some(seen) => {
-                    !seen.attention
-                        || match finished(report) {
-                            Some(run) if !report.unrecorded_failure() => {
-                                seen.last_finished != Some(run)
-                            }
-                            _ => seen.runs != runs(report),
-                        }
-                }
-            };
-            if changed {
-                items.push(item(report, None));
-            }
-            continue;
+        let seen_findings = seen.map_or(&[][..], |s| &s.findings[..]);
+        let change = Change::since(seen_findings, |r| &r.key, open_of(open, report));
+        let mut news = failure_news(report, seen, failures_after)?;
+        if !change.is_empty() {
+            let news = news.get_or_insert_with(|| Item {
+                failure_seen: report.health.broken(),
+                ..item(report, None)
+            });
+            news.new_findings = change.new.into_iter().cloned().collect();
+            news.resolved_findings = change.resolved.into_iter().cloned().collect();
         }
-        let succeeded = report.last_run.as_ref().is_some_and(
-            |run| matches!(&run.state, RunState::Finished { outcome, .. } if outcome.succeeded()),
-        );
-        if let Some(seen_run) = seen.and_then(|s| s.last_finished)
-            && report.recorded
-            && succeeded
-            && finished(report) != Some(seen_run)
-        {
-            let failed = failures_after(report, seen_run)?;
-            if let (Some(first), Some(last)) = (failed.first(), failed.last()) {
-                let failures = Failures {
-                    count: failed.len() as u64,
-                    first: first.clone(),
-                    last: last.clone(),
-                };
-                items.push(item(report, Some(failures)));
-            }
-        }
+        items.extend(news);
     }
     Ok(items)
+}
+
+/// A broken job's failure the consumer has not seen, or failures a working
+/// job recovered from since its last look.
+fn failure_news(
+    report: &JobReport,
+    seen: Option<&Seen>,
+    failures_after: &dyn Fn(&JobReport, i64) -> Result<Vec<Run>>,
+) -> Result<Option<Item>> {
+    if report.health.broken() {
+        let changed = match seen {
+            None => true,
+            // launchd counts skips as runs; recorded runs tell them apart,
+            // except for failures the recorder could not record.
+            Some(seen) => {
+                !seen.attention
+                    || match finished(report) {
+                        Some(run) if !report.unrecorded_failure() => {
+                            seen.last_finished != Some(run)
+                        }
+                        _ => seen.runs != runs(report),
+                    }
+            }
+        };
+        return Ok(changed.then(|| item(report, None)));
+    }
+    let succeeded = report.last_run.as_ref().is_some_and(
+        |run| matches!(&run.state, RunState::Finished { outcome, .. } if outcome.succeeded()),
+    );
+    if let Some(seen_run) = seen.and_then(|s| s.last_finished)
+        && report.recorded
+        && succeeded
+        && finished(report) != Some(seen_run)
+    {
+        let failed = failures_after(report, seen_run)?;
+        if let (Some(first), Some(last)) = (failed.first(), failed.last()) {
+            let failures = Failures {
+                count: failed.len() as u64,
+                first: first.clone(),
+                last: last.clone(),
+            };
+            return Ok(Some(item(report, Some(failures))));
+        }
+    }
+    Ok(None)
 }
 
 /// One machine's look: everything needing attention, or only what is new since
@@ -193,10 +256,23 @@ pub fn look(
     previous: Option<&Snapshot>,
 ) -> Result<(Vec<Item>, Option<Snapshot>)> {
     let reports = status::jobs(supervisor, ledgers)?;
+    let mut open = OpenFindings::new();
+    for report in reports.iter().filter(|r| r.open_findings > 0) {
+        if let Some(stated) = report
+            .run_store
+            .as_ref()
+            .and_then(ledgers)
+            .map(|ledger| ledger.open_findings(&report.label))
+            .transpose()?
+            .flatten()
+        {
+            open.insert(report.label.clone(), stated.set.open);
+        }
+    }
     let Some(previous) = previous else {
-        return Ok((current(&reports), None));
+        return Ok((current(&reports, &open), None));
     };
-    let items = since(previous, &reports, &|report, after| match report
+    let items = since(previous, &reports, &open, &|report, after| match report
         .run_store
         .as_ref()
         .and_then(ledgers)
@@ -204,7 +280,7 @@ pub fn look(
         Some(ledger) => ledger.failures_after(&report.label, after),
         None => Ok(vec![]),
     })?;
-    Ok((items, Some(Snapshot::after(previous, &reports))))
+    Ok((items, Some(Snapshot::after(previous, &reports, &open))))
 }
 
 fn item(report: &JobReport, recovered_from: Option<Failures>) -> Item {
@@ -217,6 +293,10 @@ fn item(report: &JobReport, recovered_from: Option<Failures>) -> Item {
         },
         last_run: report.last_run.clone(),
         recovered_from,
+        failure_seen: false,
+        findings: vec![],
+        new_findings: vec![],
+        resolved_findings: vec![],
     }
 }
 
@@ -255,7 +335,7 @@ mod tests {
     fn status_report(job: Job, run: Option<Run>) -> JobReport {
         let json = serde_json::json!({
             "label": job.label,
-            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation, None),
+            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation, None, 0),
             "activation": job.activation,
             "observation": job.observation,
             "recorded": job.recorded.is_some(),
@@ -275,33 +355,49 @@ mod tests {
     #[test]
     fn current_lists_every_job_needing_attention() {
         let reports = [report("a", 1, 1, None), report("b", 1, 0, None)];
-        assert_eq!(labels(&current(&reports)), ["a"]);
+        assert_eq!(labels(&current(&reports, &OpenFindings::new())), ["a"]);
     }
 
     #[test]
     fn reports_a_failure_once_until_it_happens_again() {
         let first = [report("scan", 5, 1, None), report("ok", 5, 0, None)];
         assert_eq!(
-            labels(&since(&Snapshot::default(), &first, &no_failures).unwrap()),
+            labels(
+                &since(
+                    &Snapshot::default(),
+                    &first,
+                    &OpenFindings::new(),
+                    &no_failures
+                )
+                .unwrap()
+            ),
             ["scan"]
         );
-        let seen = Snapshot::after(&Snapshot::default(), &first);
-        assert!(since(&seen, &first, &no_failures).unwrap().is_empty());
+        let seen = Snapshot::after(&Snapshot::default(), &first, &OpenFindings::new());
+        assert!(
+            since(&seen, &first, &OpenFindings::new(), &no_failures)
+                .unwrap()
+                .is_empty()
+        );
         let failed_again = [report("scan", 6, 1, None), report("ok", 6, 0, None)];
         assert_eq!(
-            labels(&since(&seen, &failed_again, &no_failures).unwrap()),
+            labels(&since(&seen, &failed_again, &OpenFindings::new(), &no_failures).unwrap()),
             ["scan"]
         );
         let newly_failing = [report("scan", 5, 1, None), report("ok", 6, 2, None)];
         assert_eq!(
-            labels(&since(&seen, &newly_failing, &no_failures).unwrap()),
+            labels(&since(&seen, &newly_failing, &OpenFindings::new(), &no_failures).unwrap()),
             ["ok"]
         );
     }
 
     #[test]
     fn reports_recorded_failures_that_recovered_unseen() {
-        let seen = Snapshot::after(&Snapshot::default(), &[report("job", 3, 0, Some(10))]);
+        let seen = Snapshot::after(
+            &Snapshot::default(),
+            &[report("job", 3, 0, Some(10))],
+            &OpenFindings::new(),
+        );
         let now = [report("job", 5, 0, Some(12))];
         let failures = |r: &JobReport, after: i64| -> Result<Vec<Run>> {
             assert_eq!((r.label.as_str(), after), ("job", 10));
@@ -310,15 +406,160 @@ mod tests {
             failed.state = RunState::Lost;
             Ok(vec![failed])
         };
-        let items = since(&seen, &now, &failures).unwrap();
+        let items = since(&seen, &now, &OpenFindings::new(), &failures).unwrap();
         assert_eq!(labels(&items), ["job"]);
         let recovered = items[0].recovered_from.as_ref().unwrap();
         assert_eq!((recovered.count, recovered.first.id), (1, 11));
         assert!(
-            since(&Snapshot::after(&seen, &now), &now, &failures)
+            since(
+                &Snapshot::after(&seen, &now, &OpenFindings::new()),
+                &now,
+                &OpenFindings::new(),
+                &failures
+            )
+            .unwrap()
+            .is_empty()
+        );
+    }
+
+    fn finding(key: &str) -> Finding {
+        serde_json::from_value(serde_json::json!({
+            "key": key, "title": format!("{key} broke"), "first_seen": "2026-09-21T14:13:20.000Z"
+        }))
+        .unwrap()
+    }
+    /// A recorded job whose newest run exited `exit` with `keys` open.
+    fn with_findings(label: &str, exit: i32, keys: &[&str]) -> (JobReport, OpenFindings) {
+        let mut report = report(label, 1, exit, Some(1));
+        report.open_findings = keys.len();
+        report.health = Health::assess(
+            report.activation.as_ref(),
+            &report.observation,
+            None,
+            keys.len(),
+        );
+        let open = match keys {
+            [] => OpenFindings::new(),
+            keys => [(label.to_owned(), keys.iter().map(|k| finding(k)).collect())].into(),
+        };
+        (report, open)
+    }
+    fn keys<T>(list: &[T], key: impl Fn(&T) -> &str) -> Vec<&str> {
+        list.iter().map(key).collect()
+    }
+
+    #[test]
+    fn current_lists_flagged_jobs_with_their_open_findings() {
+        let (flagged, open) = with_findings("check", 0, &["a", "b"]);
+        assert_eq!(flagged.health, Health::Flagged);
+        let items = current(&[flagged, report("ok", 1, 0, None)], &open);
+        assert_eq!(labels(&items), ["check"]);
+        assert_eq!(
+            keys(&items[0].findings, |f| f.problem.key.as_str()),
+            ["a", "b"]
+        );
+    }
+
+    #[test]
+    fn reports_problems_when_they_open_and_when_they_are_resolved() {
+        let (first, open) = with_findings("check", 0, &["a", "b"]);
+        let items = since(
+            &Snapshot::default(),
+            std::slice::from_ref(&first),
+            &open,
+            &no_failures,
+        )
+        .unwrap();
+        assert_eq!(
+            keys(&items[0].new_findings, |f| f.problem.key.as_str()),
+            ["a", "b"]
+        );
+        assert!(items[0].resolved_findings.is_empty());
+        let seen = Snapshot::after(&Snapshot::default(), std::slice::from_ref(&first), &open);
+        // Reported again by later runs: nothing new.
+        let (again, open_again) = with_findings("check", 0, &["b", "a"]);
+        assert!(
+            since(&seen, &[again], &open_again, &no_failures)
                 .unwrap()
                 .is_empty()
         );
+        let (changed, open_changed) = with_findings("check", 0, &["b", "c"]);
+        let items = since(
+            &seen,
+            std::slice::from_ref(&changed),
+            &open_changed,
+            &no_failures,
+        )
+        .unwrap();
+        assert_eq!(
+            keys(&items[0].new_findings, |f| f.problem.key.as_str()),
+            ["c"]
+        );
+        assert_eq!(keys(&items[0].resolved_findings, |r| r.key.as_str()), ["a"]);
+        assert_eq!(items[0].resolved_findings[0].title.as_str(), "a broke");
+        let seen = Snapshot::after(&seen, &[changed], &open_changed);
+        let (clear, none) = with_findings("check", 0, &[]);
+        assert_eq!(clear.health, Health::Ok);
+        let items = since(&seen, &[clear], &none, &no_failures).unwrap();
+        assert_eq!(items[0].health, Health::Ok);
+        assert_eq!(
+            keys(&items[0].resolved_findings, |r| r.key.as_str()),
+            ["b", "c"]
+        );
+    }
+
+    #[test]
+    fn a_seen_failure_is_not_repeated_for_its_findings() {
+        let (failing, open) = with_findings("check", 1, &["a"]);
+        let seen = Snapshot::after(&Snapshot::default(), &[failing], &OpenFindings::new());
+        let items = since(
+            &seen,
+            &[with_findings("check", 1, &[]).0],
+            &open,
+            &no_failures,
+        )
+        .unwrap();
+        assert!(items[0].failure_seen);
+        assert_eq!(
+            keys(&items[0].new_findings, |f| f.problem.key.as_str()),
+            ["a"]
+        );
+        // An unseen failure is news of its own.
+        let (failing, open) = with_findings("other", 1, &["a"]);
+        let items = since(&Snapshot::default(), &[failing], &open, &no_failures).unwrap();
+        assert!(!items[0].failure_seen);
+    }
+
+    #[test]
+    fn a_snapshot_from_before_findings_sees_every_open_one_as_new() {
+        let old: Snapshot = serde_json::from_value(serde_json::json!({
+            "jobs": {"check": {"attention": false, "runs": 1, "last_finished": 1}}
+        }))
+        .unwrap();
+        let (flagged, open) = with_findings("check", 0, &["a"]);
+        let items = since(&old, &[flagged], &open, &no_failures).unwrap();
+        assert_eq!(items[0].new_findings.len(), 1);
+    }
+
+    #[test]
+    fn findings_a_newer_rhythm_sends_differently_are_left_out() {
+        let item: Item = serde_json::from_value(serde_json::json!({
+            "label": "check",
+            "health": "flagged",
+            "new_findings": [
+                {"key": "a", "title": "a broke", "first_seen": "2026-09-21T14:13:20.000Z"},
+                {"key": "bad\nkey", "title": "t", "first_seen": "2026-09-21T14:13:20.000Z"}
+            ],
+            "resolved_findings": "not a list"
+        }))
+        .unwrap();
+        assert_eq!(keys(&item.new_findings, |f| f.problem.key.as_str()), ["a"]);
+        assert!(item.resolved_findings.is_empty());
+        let report: crate::runs::RunReport = serde_json::from_value(
+            serde_json::json!({"skipped": true, "findings": {"open": "many"}}),
+        )
+        .unwrap();
+        assert_eq!((report.skipped, report.findings), (true, None));
     }
 
     #[test]
@@ -351,7 +592,7 @@ mod in_progress {
         };
         let json = serde_json::json!({
             "label": "job",
-            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation, None),
+            "health": crate::jobs::Health::assess(job.activation.as_ref(), &job.observation, None, 0),
             "activation": job.activation,
             "observation": job.observation,
             "recorded": true,
@@ -371,14 +612,14 @@ mod in_progress {
     #[test]
     fn a_look_during_a_run_does_not_skip_that_runs_failure() {
         let before = [report(1, (9, finished(0)))];
-        let seen = Snapshot::after(&Snapshot::default(), &before);
+        let seen = Snapshot::after(&Snapshot::default(), &before, &OpenFindings::new());
         let during = [report(2, (10, RunState::Running))];
         assert!(
-            since(&seen, &during, &|_, _| Ok(vec![]))
+            since(&seen, &during, &OpenFindings::new(), &|_, _| Ok(vec![]))
                 .unwrap()
                 .is_empty()
         );
-        let seen = Snapshot::after(&seen, &during);
+        let seen = Snapshot::after(&seen, &during, &OpenFindings::new());
         assert_eq!(seen.jobs["job"].last_finished, Some(9));
         // Run 10 failed, run 11 succeeded: run 10 is still news.
         let after = [report(3, (11, finished(0)))];
@@ -391,13 +632,17 @@ mod in_progress {
                 state: finished(1),
             }])
         };
-        let items = since(&seen, &after, &failures).unwrap();
+        let items = since(&seen, &after, &OpenFindings::new(), &failures).unwrap();
         assert_eq!(items[0].recovered_from.as_ref().unwrap().first.id, 10);
     }
 
     #[test]
     fn a_job_still_running_after_a_failure_has_not_recovered() {
-        let seen = Snapshot::after(&Snapshot::default(), &[report(1, (9, finished(0)))]);
+        let seen = Snapshot::after(
+            &Snapshot::default(),
+            &[report(1, (9, finished(0)))],
+            &OpenFindings::new(),
+        );
         let running = [report(3, (11, RunState::Running))];
         let failures = |_: &JobReport, _: i64| -> Result<Vec<Run>> {
             Ok(vec![Run {
@@ -407,6 +652,10 @@ mod in_progress {
                 state: finished(1),
             }])
         };
-        assert!(since(&seen, &running, &failures).unwrap().is_empty());
+        assert!(
+            since(&seen, &running, &OpenFindings::new(), &failures)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

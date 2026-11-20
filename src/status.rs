@@ -34,6 +34,10 @@ pub struct JobReport {
         deserialize_with = "crate::runs::lenient"
     )]
     pub verdict: Option<Verdict>,
+    /// How many problems the job's newest statement of its findings left
+    /// open; `rhythm findings` lists them.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub open_findings: usize,
     /// Where a local recorded job's runs are kept; never sent to other machines.
     #[serde(skip)]
     pub run_store: Option<RunStore>,
@@ -47,6 +51,7 @@ impl JobReport {
                 runs.verdict.filter(|_| {
                     !unrecorded_failure(&job.observation, &runs.last_run, &runs.last_skip)
                 }),
+                runs.open_findings,
             ),
             label: job.label,
             activation: job.activation,
@@ -56,6 +61,7 @@ impl JobReport {
             last_run: runs.last_run,
             last_skip: runs.last_skip,
             verdict: runs.verdict,
+            open_findings: runs.open_findings,
         }
     }
     /// launchd saw the job fail after its newest recorded run exited 0: a run
@@ -77,6 +83,7 @@ impl JobReport {
             last_run: self.last_run,
             last_skip: self.last_skip,
             verdict: self.verdict.filter(|_| self.recorded),
+            open_findings: if self.recorded { self.open_findings } else { 0 },
         };
         Self {
             run_store: None,
@@ -211,4 +218,8 @@ pub fn gather(
             })
             .collect(),
     }
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }

@@ -1,5 +1,7 @@
 //! Which of a job's recorded runs are kept. Skipped runs have their own small
 //! allowance, so a job that mostly finds nothing to do keeps its real runs.
+//! The newest run that stated the job's open findings is always kept, so
+//! those findings never disappear just because the job stopped listing them.
 use crate::runs::Timestamp;
 
 /// Runs kept per job that were not skipped, with their output.
@@ -19,7 +21,8 @@ pub struct Stored {
 }
 
 /// The runs to remove at `now`, from one job's runs listed newest first.
-pub fn expired(runs: &[Stored], now: Timestamp) -> Vec<i64> {
+/// `stating` is the run whose statement of open findings is current.
+pub fn expired(runs: &[Stored], now: Timestamp, stating: Option<i64>) -> Vec<i64> {
     let (mut real, mut skipped) = (0, 0);
     runs.iter()
         .filter(|run| {
@@ -30,6 +33,9 @@ pub fn expired(runs: &[Stored], now: Timestamp) -> Vec<i64> {
             };
             if *kept < allowance {
                 *kept += 1;
+                return false;
+            }
+            if Some(run.id) == stating {
                 return false;
             }
             run.finished || run.started_at.0 < now.0 - UNFINISHED_GRACE_MS
@@ -65,7 +71,7 @@ mod tests {
         pattern.extend([false; 105]);
         pattern.extend([true; 5]);
         let stored = runs(140, &pattern);
-        let expired = expired(&stored, NOW);
+        let expired = expired(&stored, NOW, None);
         // Skips are 140–111 and 5–1, real runs 110–6.
         let skips_dropped: Vec<i64> = (111..=120).rev().collect();
         let real_dropped: Vec<i64> = (6..=10).rev().collect();
@@ -80,9 +86,9 @@ mod tests {
     #[test]
     fn a_job_that_never_skips_keeps_100_runs() {
         let stored = runs(103, &[false; 103]);
-        assert_eq!(expired(&stored, NOW), [3, 2, 1]);
-        assert!(expired(&runs(100, &[false; 100]), NOW).is_empty());
-        assert!(expired(&runs(20, &[true; 20]), NOW).is_empty());
+        assert_eq!(expired(&stored, NOW, None), [3, 2, 1]);
+        assert!(expired(&runs(100, &[false; 100]), NOW, None).is_empty());
+        assert!(expired(&runs(20, &[true; 20]), NOW, None).is_empty());
     }
 
     #[test]
@@ -93,6 +99,15 @@ mod tests {
         stored[100].started_at = Timestamp(NOW.0 - UNFINISHED_GRACE_MS + 1);
         stored[101].finished = false;
         stored[101].started_at = Timestamp(NOW.0 - UNFINISHED_GRACE_MS - 1);
-        assert_eq!(expired(&stored, NOW), [1]);
+        assert_eq!(expired(&stored, NOW, None), [1]);
+    }
+
+    #[test]
+    fn the_newest_run_that_stated_findings_outlives_the_allowance() {
+        let stored = runs(103, &[false; 103]);
+        assert_eq!(expired(&stored, NOW, Some(2)), [3, 1]);
+        // It counts toward the allowance while it is within it.
+        let stored = runs(101, &[false; 101]);
+        assert_eq!(expired(&stored, NOW, Some(101)), [1]);
     }
 }

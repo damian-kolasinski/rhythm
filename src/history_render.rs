@@ -1,5 +1,6 @@
 //! Terminal rendering of a job's recorded runs.
 use crate::{
+    findings_render,
     run_history::HistoryResponse,
     runs::{Run, RunReport, RunState, Timestamp},
     time_text,
@@ -65,8 +66,26 @@ where
 }
 
 /// Runs newest first, each alone except consecutive skips when collapsing.
+/// A skip that changed the open problems keeps its own row.
 fn groups(runs: &[Run], skips: Skips) -> impl Iterator<Item = &[Run]> {
-    runs.chunk_by(move |a, b| skips == Skips::Collapse && a.state.skipped() && b.state.skipped())
+    let plain = |run: &Run| run.state.skipped() && change(run).is_none();
+    runs.chunk_by(move |a, b| skips == Skips::Collapse && plain(a) && plain(b))
+}
+
+/// How the run changed the open problems, as in `+1 problem, 1 resolved`.
+fn change(run: &Run) -> Option<String> {
+    let RunState::Finished { report, .. } = &run.state else {
+        return None;
+    };
+    let set = report.findings.as_ref()?;
+    let mut parts = vec![];
+    if !set.new.is_empty() {
+        parts.push(format!("+{}", findings_render::problems(set.new.len())));
+    }
+    if set.resolved > 0 {
+        parts.push(format!("{} resolved", set.resolved));
+    }
+    (!parts.is_empty()).then(|| parts.join(", "))
 }
 
 /// A row for one run, or for consecutive skips described by the newest.
@@ -91,6 +110,9 @@ where
                 ),
                 _ => outcome.to_string(),
             };
+            if let Some(change) = change(run) {
+                write!(result, ", {change}").unwrap();
+            }
             describe(&mut result, report);
             (*ended_at, result)
         }

@@ -11,6 +11,8 @@ mod cron;
 mod definition_file;
 pub mod demo;
 pub mod failure_notice;
+pub mod findings;
+pub mod findings_render;
 pub mod history_render;
 #[cfg(target_os = "macos")]
 pub mod installation;
@@ -20,6 +22,7 @@ pub mod kick_render;
 pub mod launchd;
 pub mod ledger;
 pub mod notifier;
+pub mod open_findings;
 pub mod operation_error;
 pub mod private_storage;
 pub mod recorder;

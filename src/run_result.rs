@@ -1,7 +1,10 @@
 //! The result file a job may write through `RHYTHM_RESULT` to say how its run
 //! went: where it lives, and how it is read and validated. Writing one is
 //! optional; without it a run is recorded exactly as before.
-use crate::runs::{ResultError, RunReport, Summary};
+use crate::{
+    findings::{self, Reported, Said},
+    runs::{ResultError, RunReport, Summary},
+};
 use serde::Deserialize;
 use std::{
     fs::File,
@@ -26,23 +29,55 @@ pub fn path(dir: &Path) -> PathBuf {
 pub struct JobResult {
     pub skipped: bool,
     pub summary: Option<Summary>,
+    /// The problems open now, when the job listed them.
+    pub findings: Option<Reported>,
+}
+impl JobResult {
+    /// Findings count whatever the outcome: a job can fail at one part of
+    /// its work and still know what is open.
+    fn collected(self) -> Collected {
+        Collected {
+            report: RunReport {
+                skipped: self.skipped,
+                summary: self.summary,
+                ..RunReport::default()
+            },
+            findings: Said::Readable(self.findings),
+        }
+    }
 }
 
-/// The report read from the result file of the run whose output directory is
-/// `dir`. Never fails: a bad file becomes the run's `result_error`. Whether a
+/// What a run's result file said: the run's report, still without the open
+/// findings that follow from the previous run's, and what it said about them.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Collected {
+    pub report: RunReport,
+    pub findings: Said,
+}
+impl Collected {
+    /// A run that wrote no result.
+    pub fn nothing() -> Self {
+        Self {
+            report: RunReport::default(),
+            findings: Said::Nothing,
+        }
+    }
+}
+
+/// What the run whose output directory is `dir` wrote to its result file.
+/// Never fails: a bad file becomes the run's `result_error`. Whether a
 /// reported skip counts depends on how the run ended; see
 /// [`RunState::skipped`](crate::runs::RunState::skipped).
-pub fn collect(dir: &Path) -> RunReport {
+pub fn collect(dir: &Path) -> Collected {
     match read(dir) {
-        Ok(None) => RunReport::default(),
-        Ok(Some(result)) => RunReport {
-            skipped: result.skipped,
-            summary: result.summary,
-            result_error: None,
-        },
-        Err(error) => RunReport {
-            result_error: Some(error),
-            ..RunReport::default()
+        Ok(None) => Collected::nothing(),
+        Ok(Some(result)) => result.collected(),
+        Err(error) => Collected {
+            report: RunReport {
+                result_error: Some(error),
+                ..RunReport::default()
+            },
+            findings: Said::Unreadable(error),
         },
     }
 }
@@ -76,9 +111,10 @@ pub fn read(dir: &Path) -> Result<Option<JobResult>, ResultError> {
     parse(&bytes).map(Some)
 }
 
-/// Validates version 1: `{"version": 1, "skipped": bool, "summary": string}`,
-/// where only `version` is required and unknown fields are ignored so later
-/// additions to version 1 stay readable.
+/// Validates version 1: `{"version": 1, "skipped": bool, "summary": string,
+/// "findings": [...]}`, where only `version` is required and unknown fields
+/// are ignored so later additions to version 1 stay readable. See
+/// [`findings::parse`] for the findings.
 pub fn parse(bytes: &[u8]) -> Result<JobResult, ResultError> {
     #[derive(Deserialize)]
     struct Versioned {
@@ -90,6 +126,8 @@ pub fn parse(bytes: &[u8]) -> Result<JobResult, ResultError> {
         skipped: bool,
         #[serde(default)]
         summary: Option<String>,
+        #[serde(default)]
+        findings: Option<serde_json::Value>,
     }
     let value: serde_json::Value =
         serde_json::from_slice(bytes).map_err(|_| ResultError::Invalid)?;
@@ -103,6 +141,12 @@ pub fn parse(bytes: &[u8]) -> Result<JobResult, ResultError> {
     Ok(JobResult {
         skipped: result.skipped,
         summary: result.summary.as_deref().and_then(Summary::new),
+        findings: result
+            .findings
+            .as_ref()
+            .map(findings::parse)
+            .transpose()
+            .map_err(|_| ResultError::Invalid)?,
     })
 }
 
@@ -114,12 +158,11 @@ mod tests {
     #[test]
     fn reads_version_1_and_ignores_unknown_fields() {
         assert_eq!(
-            parse(
-                br#"{"version": 1, "skipped": true, "summary": " nothing new ", "findings": []}"#
-            ),
+            parse(br#"{"version": 1, "skipped": true, "summary": " nothing new ", "extra": []}"#),
             Ok(JobResult {
                 skipped: true,
                 summary: Summary::new("nothing new"),
+                findings: None,
             })
         );
         assert_eq!(parse(br#"{"version": 1}"#), Ok(JobResult::default()));
@@ -144,6 +187,8 @@ mod tests {
             br#"{"version": 1, "skipped": "yes"}"#,
             br#"{"version": 1, "summary": 3}"#,
             br#"{"version": 1} trailing"#,
+            br#"{"version": 1, "findings": {}}"#,
+            br#"{"version": 1, "findings": [{"key": "rhythm:result", "title": "t"}]}"#,
         ] {
             assert_eq!(
                 parse(invalid),
@@ -161,6 +206,16 @@ mod tests {
         }
     }
 
+    #[test]
+    fn findings_count_whatever_the_outcome_and_null_means_none() {
+        let result = parse(br#"{"version": 1, "findings": [{"key": "k", "title": "t"}]}"#).unwrap();
+        let findings = result.findings.clone().unwrap();
+        assert_eq!(findings.problems[0].key.as_str(), "k");
+        assert_eq!(result.collected().findings, Said::Readable(Some(findings)));
+        let silent = parse(br#"{"version": 1, "findings": null}"#).unwrap();
+        assert_eq!(silent.collected().findings, Said::Readable(None));
+    }
+
     fn private_dir() -> (tempfile::TempDir, PathBuf) {
         let temp = tempfile::TempDir::new().unwrap();
         let dir = temp.path().join("run");
@@ -172,7 +227,7 @@ mod tests {
     fn reads_only_a_bounded_regular_file() {
         let (temp, dir) = private_dir();
         assert_eq!(read(&dir), Ok(None));
-        assert_eq!(collect(&dir), RunReport::default());
+        assert_eq!(collect(&dir), Collected::nothing());
 
         let target = temp.path().join("elsewhere.json");
         std::fs::write(&target, r#"{"version": 1, "skipped": true}"#).unwrap();
@@ -196,9 +251,12 @@ mod tests {
         assert_eq!(read(&dir), Err(ResultError::TooLarge));
         assert_eq!(
             collect(&dir),
-            RunReport {
-                result_error: Some(ResultError::TooLarge),
-                ..RunReport::default()
+            Collected {
+                report: RunReport {
+                    result_error: Some(ResultError::TooLarge),
+                    ..RunReport::default()
+                },
+                findings: Said::Unreadable(ResultError::TooLarge),
             }
         );
     }
