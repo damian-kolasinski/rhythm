@@ -12,7 +12,9 @@ rhythm logs report`; a command that cannot start at all counts. When a failing
 job succeeds again, it posts that it recovered. Repeated failures stay quiet,
 so a job failing every five minutes notifies once. A run ended because the job
 was asked to stop, as when it is unloaded or the user logs out, is recorded as
-`stopped` and is neither a failure nor a recovery; nor are lost runs.
+`stopped` and is neither a failure nor a recovery; nor are lost runs, nor
+runs the job reported as [skipped](results.md), which are also passed over
+when deciding whether the next run is a change.
 
 Delivery never delays the job. It is configured in the job's own environment,
 for example with `rhythm add --env`:
@@ -40,8 +42,9 @@ attention. With it, each consumer named by `--as` (lowercase letters, digits,
 and hyphens; `default` when omitted) gets only what changed since its previous
 look:
 
-- a job that newly needs attention, or failed again since, which launchd's run
-  count or a newer recorded run shows;
+- a job that newly needs attention, or failed again since, which a newer
+  recorded run that was not skipped shows, or launchd's run count for a job
+  without recorded runs or with failures the recorder could not record;
 - a recorded job that failed and recovered in between, which would otherwise
   go unseen.
 

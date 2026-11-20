@@ -78,7 +78,9 @@ fn line(item: &Item, host: &str, now: Timestamp) -> String {
         (Health::Down, _) => "is a keep-alive job that is not running".to_owned(),
         // Recorded detail when it shows the failure; launchd's own exit otherwise.
         (_, Some(run)) if run.state.failed() => match &run.state {
-            RunState::Finished { ended_at, outcome } => {
+            RunState::Finished {
+                ended_at, outcome, ..
+            } => {
                 format!("failed: {outcome}, {}", time_text::ago(*ended_at, now))
             }
             RunState::Lost => format!(

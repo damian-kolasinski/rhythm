@@ -61,11 +61,16 @@ System launchd jobs and cron entries are read-only in the inventory.
 3. For an unrecorded user LaunchAgent, launchd can show its last exit.
    `rhythm adopt LABEL` records the output of future runs.
 
+A job that polls often and usually finds nothing to do should report those
+runs as skipped through `RHYTHM_RESULT`, so its real runs stay visible; see
+[run results](results.md).
+
 Tell the user about failures you find rather than silently retrying them.
 Each reference below has the details: `rhythm skill show NAME`.
 
 - `status`: states, other machines, and the JSON contract.
 - `runs`: the recorder, history, output, and retention.
+- `results`: let a job report a skip or a one-line summary of its run.
 - `authoring`: `add`, `adopt`, `remove`, and `kick` in detail.
 - `attention`: notifications and `attention --since-last-seen`.
 - `agents`: the skill and session hook `rhythm skill setup` installs.

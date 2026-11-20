@@ -1,8 +1,8 @@
 //! Golden tests for terminal history output. Set UPDATE_GOLDEN=1 to rewrite them.
 use rhythm::{
-    history_render::render,
+    history_render::{Skips, render},
     run_history::HistoryResponse,
-    runs::{Outcome, Run, RunState, Timestamp},
+    runs::{Outcome, ResultError, Run, RunReport, RunState, Summary, Timestamp},
 };
 use std::path::Path;
 
@@ -26,10 +26,29 @@ fn run(id: i64, started_ago: i64, state: RunState) -> Run {
 }
 
 fn finished(ended_ago: i64, outcome: Outcome) -> RunState {
+    reported(ended_ago, outcome, RunReport::default())
+}
+
+fn reported(ended_ago: i64, outcome: Outcome, report: RunReport) -> RunState {
     RunState::Finished {
         ended_at: Timestamp(NOW.0 - ended_ago),
         outcome,
+        report,
     }
+}
+
+/// A clean exit that reported a skip, started `started_ago` and taking 200ms.
+fn skip(id: i64, started_ago: i64, summary: Option<&str>) -> Run {
+    let report = RunReport {
+        skipped: true,
+        summary: summary.and_then(Summary::new),
+        result_error: None,
+    };
+    run(
+        id,
+        started_ago,
+        reported(started_ago - 200, Outcome::Code { code: 0 }, report),
+    )
 }
 
 #[test]
@@ -61,7 +80,10 @@ fn renders_runs_newest_first_with_failures_marked() {
             ),
         ],
     };
-    golden("history", &render(&history, NOW, &chrono::Utc));
+    golden(
+        "history",
+        &render(&history, NOW, &chrono::Utc, Skips::Collapse),
+    );
 }
 
 #[test]
@@ -70,5 +92,78 @@ fn explains_an_empty_history() {
         label: "com.example.scan".into(),
         runs: vec![],
     };
-    golden("history-empty", &render(&history, NOW, &chrono::Utc));
+    golden(
+        "history-empty",
+        &render(&history, NOW, &chrono::Utc, Skips::Collapse),
+    );
+}
+
+/// A job polling every 15 minutes: runs of skips around real runs.
+fn polling() -> HistoryResponse {
+    const MINUTE: i64 = 60_000;
+    let summary = |text: &str| RunReport {
+        summary: Summary::new(text),
+        ..RunReport::default()
+    };
+    let mut runs = vec![];
+    // The newest 12 skips, every 15 minutes since late this morning.
+    for i in 0..12 {
+        let summary = (i == 0).then_some("nothing new since the last check");
+        runs.push(skip(140 - i, (4 + 15 * i) * MINUTE, summary));
+    }
+    runs.push(run(
+        128,
+        3 * 60 * MINUTE,
+        reported(
+            3 * 60 * MINUTE - 41_000,
+            Outcome::Code { code: 0 },
+            summary("synced 3 new items"),
+        ),
+    ));
+    runs.push(run(
+        127,
+        3 * 60 * MINUTE + 15 * MINUTE,
+        reported(
+            3 * 60 * MINUTE + 15 * MINUTE - 900,
+            Outcome::Code { code: 0 },
+            RunReport {
+                result_error: Some(ResultError::Invalid),
+                ..RunReport::default()
+            },
+        ),
+    ));
+    // One skip alone between real runs, then skips since yesterday.
+    runs.push(skip(126, 3 * 60 * MINUTE + 30 * MINUTE, None));
+    runs.push(run(
+        125,
+        3 * 60 * MINUTE + 45 * MINUTE,
+        reported(
+            3 * 60 * MINUTE + 45 * MINUTE - 2_000,
+            Outcome::Code { code: 1 },
+            summary("the source answered 503"),
+        ),
+    ));
+    runs.push(skip(124, 15 * 60 * MINUTE, Some("still nothing")));
+    runs.push(skip(123, 15 * 60 * MINUTE + 15 * MINUTE, None));
+    runs.push(skip(122, 24 * 60 * MINUTE, None));
+    HistoryResponse {
+        label: "com.example.poll".into(),
+        runs,
+    }
+}
+
+#[test]
+fn collapses_consecutive_skips_and_shows_what_runs_reported() {
+    golden(
+        "history-skips",
+        &render(&polling(), NOW, &chrono::Utc, Skips::Collapse),
+    );
+}
+
+#[test]
+fn lists_every_skip_when_asked() {
+    golden(
+        "history-skips-all",
+        &render(&polling(), NOW, &chrono::Utc, Skips::List),
+    );
 }

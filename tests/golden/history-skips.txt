@@ -1,0 +1,7 @@
+  RUN  STARTED              DURATION  RESULT
+  140  2026-09-21 14:09:20     200ms  skipped ×12 since 11:24: nothing new since the last check
+  128  2026-09-21 11:13:20     41.0s  exit 0: synced 3 new items
+  127  2026-09-21 10:58:20     900ms  exit 0, result file invalid
+  126  2026-09-21 10:43:20     200ms  skipped
+! 125  2026-09-21 10:28:20      2.0s  exit 1: the source answered 503
+  124  2026-09-20 23:13:20     200ms  skipped ×3 since 2026-09-20 14:13: still nothing

@@ -186,7 +186,9 @@ impl Activity {
                     "Run interrupted".into(),
                     Some(time_text::ago(run.started_at, now)),
                 ),
-                RunState::Finished { ended_at, outcome } => {
+                RunState::Finished {
+                    ended_at, outcome, ..
+                } => {
                     let headline = match outcome {
                         Outcome::Code { code: 0 } => "Succeeded".into(),
                         Outcome::Code { code } => format!("Exit {code}"),

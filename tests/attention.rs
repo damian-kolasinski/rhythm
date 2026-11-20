@@ -8,7 +8,7 @@ use rhythm::{
     ledger::{self, Ledger},
     operation_error::Error,
     private_storage::Root,
-    runs::{Outcome, Timestamp},
+    runs::{Outcome, RunReport, Timestamp},
 };
 use std::{fs, path::Path};
 use tempfile::TempDir;
@@ -63,11 +63,27 @@ impl Fixture {
         .unwrap();
     }
     fn record(&self, label: &str, code: i32) {
+        self.record_reported(label, code, RunReport::default());
+    }
+    /// A run whose job said it had nothing to do.
+    fn skip(&self, label: &str) {
+        let report = RunReport {
+            skipped: true,
+            ..RunReport::default()
+        };
+        self.record_reported(label, 0, report);
+    }
+    fn record_reported(&self, label: &str, code: i32, report: RunReport) {
         let ledger = Ledger::open(self.state(), ledger::READER_WAIT).unwrap();
         let label: Label = label.parse().unwrap();
         let id = ledger.start(&label, 1, Timestamp(NOW.0 - 60_000)).unwrap();
         ledger
-            .finish(id, Timestamp(NOW.0 - 50_000), Outcome::Code { code })
+            .finish(
+                id,
+                Timestamp(NOW.0 - 50_000),
+                Outcome::Code { code },
+                &report,
+            )
             .unwrap();
     }
     fn launchd(&self) -> Launchd {
@@ -120,6 +136,46 @@ fn each_consumer_hears_about_a_failure_once_until_it_fails_again() {
     f.observe("dev.rhythm.report", 2, 1);
     f.record("dev.rhythm.report", 1);
     assert_eq!(labels(&f.look("claude-code")), failing);
+}
+
+#[test]
+fn skips_neither_repeat_a_failure_nor_end_it() {
+    let f = Fixture::new();
+    f.define("dev.rhythm.poll");
+    f.observe("dev.rhythm.poll", 1, 1);
+    f.record("dev.rhythm.poll", 1);
+    let failing = [("dev.rhythm.poll", Health::Failing)];
+    assert_eq!(labels(&f.look("agent")), failing);
+
+    // launchd counts each skip as a run that exited 0.
+    f.skip("dev.rhythm.poll");
+    f.skip("dev.rhythm.poll");
+    f.observe("dev.rhythm.poll", 3, 0);
+    assert!(f.look("agent").is_empty());
+    let (current, _) = attention::look(&f.launchd(), &ledgers, None).unwrap();
+    assert_eq!(labels(&current), failing);
+
+    f.record("dev.rhythm.poll", 1);
+    f.observe("dev.rhythm.poll", 4, 1);
+    assert_eq!(labels(&f.look("agent")), failing);
+    f.record("dev.rhythm.poll", 0);
+    f.skip("dev.rhythm.poll");
+    f.observe("dev.rhythm.poll", 6, 0);
+    assert!(f.look("agent").is_empty());
+}
+
+#[test]
+fn failures_the_recorder_could_not_record_are_reported_each_time() {
+    let f = Fixture::new();
+    f.define("dev.rhythm.sync");
+    f.record("dev.rhythm.sync", 0);
+    // launchd saw runs fail that never reached the ledger.
+    f.observe("dev.rhythm.sync", 2, 7);
+    let failing = [("dev.rhythm.sync", Health::Failing)];
+    assert_eq!(labels(&f.look("agent")), failing);
+    assert!(f.look("agent").is_empty());
+    f.observe("dev.rhythm.sync", 3, 7);
+    assert_eq!(labels(&f.look("agent")), failing);
 }
 
 #[test]

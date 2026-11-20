@@ -3,8 +3,8 @@ use rhythm::{
     jobs::Label,
     ledger::{self, Ledger},
     private_storage::Root,
-    run_output,
-    runs::{Outcome, RunState, Timestamp},
+    retention, run_output,
+    runs::{Outcome, ResultError, RunReport, RunState, Summary, Timestamp},
 };
 use std::{
     os::unix::{
@@ -374,25 +374,57 @@ fn concurrent_recorders_share_the_ledger() {
 }
 
 #[test]
-fn keeps_the_newest_runs_and_their_output() {
+fn keeps_the_newest_real_and_skipped_runs_and_their_output() {
     let f = Fixture::new();
     let ledger = f.ledger();
     let label: Label = LABEL.parse().unwrap();
-    let mut first_dir = None;
-    for _ in 0..(ledger::KEEP + 3) {
+    let run = |skipped: bool| {
         let id = ledger
             .start(&label, std::process::id(), Timestamp::now())
             .unwrap();
         let dir = ledger.output_dir(id).unwrap();
-        first_dir.get_or_insert(dir);
+        let report = RunReport {
+            skipped,
+            ..RunReport::default()
+        };
         ledger
-            .finish(id, Timestamp::now(), Outcome::Code { code: 0 })
+            .finish(id, Timestamp::now(), Outcome::Code { code: 0 }, &report)
             .unwrap();
+        dir
+    };
+    let first_real = run(false);
+    for _ in 1..(retention::KEEP + 3) {
+        run(false);
+    }
+    let first_skip = run(true);
+    for _ in 1..(retention::KEEP_SKIPPED + 3) {
+        run(true);
     }
     let runs = ledger.history(LABEL, 1000).unwrap();
-    assert_eq!(runs.len() as i64, ledger::KEEP);
+    let skipped = runs.iter().filter(|r| r.state.skipped()).count();
+    assert_eq!(
+        (runs.len() - skipped, skipped),
+        (retention::KEEP, retention::KEEP_SKIPPED)
+    );
+    // Real runs 1–103 and skips 104–126: the oldest of each are gone.
     assert_eq!(runs.last().unwrap().id, 4);
-    assert!(!first_dir.unwrap().exists());
+    assert_eq!(runs[retention::KEEP_SKIPPED - 1].id, 107);
+    assert!(!first_real.exists() && !first_skip.exists());
+}
+
+#[test]
+fn runs_that_never_finish_are_pruned_once_their_grace_is_over() {
+    let f = Fixture::new();
+    let ledger = f.ledger();
+    let label: Label = LABEL.parse().unwrap();
+    for _ in 0..(retention::KEEP + 3) {
+        ledger.start(&label, 0, Timestamp(1_000)).unwrap();
+    }
+    let later = Timestamp(1_000 + retention::UNFINISHED_GRACE_MS + 1);
+    let newest = ledger.start(&label, 0, later).unwrap();
+    let runs = ledger.history(LABEL, 1000).unwrap();
+    assert_eq!(runs.len(), retention::KEEP + 1);
+    assert_eq!((runs[0].id, runs.last().unwrap().id), (newest, 4));
 }
 
 #[test]
@@ -573,4 +605,271 @@ fn the_command_knows_which_job_it_runs_in() {
     let f = Fixture::new();
     f.record(&[], "echo \"$RHYTHM_JOB\"");
     assert_eq!(f.json(&["logs", LABEL])["output"], "com.example.job\n");
+}
+
+/// Writes the result file atomically, as the results guide recommends.
+fn report(json: &str) -> String {
+    format!(
+        "[ -n \"$RHYTHM_RESULT\" ] && printf '%s' '{json}' > \"$RHYTHM_RESULT.tmp\" && mv \"$RHYTHM_RESULT.tmp\" \"$RHYTHM_RESULT\""
+    )
+}
+
+fn finished_report(f: &Fixture) -> (Outcome, RunReport) {
+    match f.ledger().latest(LABEL).unwrap().unwrap().state {
+        RunState::Finished {
+            outcome, report, ..
+        } => (outcome, report),
+        state => panic!("{state:?}"),
+    }
+}
+
+#[test]
+fn a_job_can_say_it_had_nothing_to_do() {
+    let f = Fixture::new();
+    let script = format!(
+        "echo \"$RHYTHM_RESULT\"; {}",
+        report(r#"{"version": 1, "skipped": true, "summary": "nothing new", "later": [1]}"#)
+    );
+    let output = f.record(&[], &script);
+    assert!(output.status.success());
+    let logs = f.json(&["logs", LABEL]);
+    let dir = f.state().join("runs").join(logs["run"]["id"].to_string());
+    assert_eq!(
+        logs["output"],
+        format!("{}\n", dir.join("result.json").display())
+    );
+    let history = f.json(&["history", LABEL]);
+    let run = &history["runs"][0];
+    assert_eq!(
+        run["outcome"],
+        serde_json::json!({"type": "code", "code": 0})
+    );
+    assert_eq!(run["skipped"], true);
+    assert_eq!(run["summary"], "nothing new");
+    assert!(run.get("result_error").is_none());
+}
+
+#[test]
+fn only_a_clean_exit_can_skip_and_any_run_can_summarize() {
+    let f = Fixture::new();
+    let script = format!(
+        "{}; exit 3",
+        report(r#"{"version": 1, "skipped": true, "summary": "gave up"}"#)
+    );
+    assert_eq!(f.record(&[], &script).status.code(), Some(3));
+    assert_eq!(
+        finished_report(&f),
+        (
+            Outcome::Code { code: 3 },
+            RunReport {
+                skipped: false,
+                summary: Summary::new("gave up"),
+                result_error: None,
+            }
+        )
+    );
+    f.record(
+        &[],
+        &report(r#"{"version": 1, "summary": "3 items synced"}"#),
+    );
+    assert_eq!(
+        finished_report(&f).1.summary,
+        Summary::new("3 items synced")
+    );
+    // Without a result file the run is recorded as before.
+    f.record(&[], "exit 0");
+    assert_eq!(finished_report(&f).1, RunReport::default());
+}
+
+#[test]
+fn a_bad_result_file_is_noted_and_the_run_recorded_normally() {
+    let f = Fixture::new();
+    let elsewhere = f.temp.path().join("elsewhere.json");
+    std::fs::write(&elsewhere, r#"{"version": 1, "skipped": true}"#).unwrap();
+    for (script, error) in [
+        (report("{not json"), ResultError::Invalid),
+        (
+            report(r#"{"version": 2, "skipped": true}"#),
+            ResultError::UnsupportedVersion,
+        ),
+        (
+            format!("ln -s '{}' \"$RHYTHM_RESULT\"", elsewhere.display()),
+            ResultError::Unreadable,
+        ),
+        (
+            "head -c 262145 /dev/zero | tr '\\0' ' ' > \"$RHYTHM_RESULT\"".to_owned(),
+            ResultError::TooLarge,
+        ),
+    ] {
+        assert!(f.record(&[], &script).status.success(), "{script}");
+        assert_eq!(
+            finished_report(&f),
+            (
+                Outcome::Code { code: 0 },
+                RunReport {
+                    result_error: Some(error),
+                    ..RunReport::default()
+                }
+            ),
+            "{script}"
+        );
+    }
+    let history = f.json(&["history", LABEL]);
+    assert_eq!(history["runs"][0]["result_error"], "too_large");
+    assert_eq!(history["runs"][0]["outcome"]["code"], 0);
+}
+
+#[test]
+fn only_a_stored_run_offers_a_result_file() {
+    let f = Fixture::new();
+    let seen = f.temp.path().join("seen");
+    let script = format!("echo \"${{RHYTHM_RESULT-absent}}\" > '{}'", seen.display());
+    // Recording unavailable: an inherited variable must not reach the command.
+    std::fs::create_dir(f.state()).unwrap();
+    std::fs::set_permissions(f.state(), std::fs::Permissions::from_mode(0o755)).unwrap();
+    let output = f
+        .command(&["run", LABEL, "--", "/bin/sh", "-c", &script])
+        .env("RHYTHM_RESULT", "/elsewhere/result.json")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(std::fs::read_to_string(&seen).unwrap(), "absent\n");
+    // Recorded, but without private storage for the run.
+    std::fs::set_permissions(f.state(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::create_dir_all(f.state().join("runs")).unwrap();
+    std::fs::set_permissions(
+        f.state().join("runs"),
+        std::fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let output = f
+        .command(&["run", LABEL, "--", "/bin/sh", "-c", &script])
+        .env("RHYTHM_RESULT", "/elsewhere/result.json")
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert_eq!(std::fs::read_to_string(&seen).unwrap(), "absent\n");
+    assert!(f.ledger().latest(LABEL).unwrap().is_some());
+}
+
+#[test]
+fn skips_neither_fail_nor_recover_a_job() {
+    let f = Fixture::new();
+    let notices = f.temp.path().join("notices");
+    let notifier = f.temp.path().join("notify");
+    std::fs::write(
+        &notifier,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"$1\" >> '{}'\n",
+            notices.display()
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&notifier, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let skip = report(r#"{"version": 1, "skipped": true}"#);
+    let run = |script: &str| {
+        f.command(&["run", LABEL, "--", "/bin/sh", "-c", script])
+            .env_remove("RHYTHM_NOTIFY")
+            .env("RHYTHM_NOTIFY_COMMAND", &notifier)
+            .output()
+            .unwrap()
+    };
+    let expected = |lines: &[&str]| {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let seen = std::fs::read_to_string(&notices).unwrap_or_default();
+            if seen.lines().collect::<Vec<_>>() == lines {
+                return;
+            }
+            assert!(Instant::now() < deadline, "notices: {seen:?}");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    };
+    run(&skip);
+    run("exit 2");
+    run(&skip);
+    run(&skip);
+    // The previous real run failed, so this failure is not news.
+    run("exit 2");
+    std::thread::sleep(Duration::from_millis(300));
+    expected(&["com.example.job failed"]);
+    run("exit 0");
+    expected(&["com.example.job failed", "com.example.job recovered"]);
+}
+
+#[test]
+fn history_limits_real_runs_and_logs_pass_over_skips() {
+    let f = Fixture::new();
+    f.record(&[], "echo first");
+    f.record(&[], "echo failed; exit 1");
+    for _ in 0..3 {
+        f.record(
+            &[],
+            &format!(
+                "echo skip; {}",
+                report(r#"{"version": 1, "skipped": true}"#)
+            ),
+        );
+    }
+    let history = f.json(&["history", LABEL, "--limit", "1"]);
+    let ids: Vec<i64> = history["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r["id"].as_i64().unwrap())
+        .collect();
+    assert_eq!(ids, [5, 4, 3, 2]);
+    assert_eq!(f.json(&["logs", LABEL])["output"], "failed\n");
+    assert_eq!(f.json(&["logs", LABEL, "--run", "5"])["output"], "skip\n");
+    let text = f.command(&["history", LABEL]).output().unwrap();
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(text.contains("skipped ×3 since "), "{text}");
+    let text = f.command(&["history", LABEL, "--all"]).output().unwrap();
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert_eq!(text.matches("skipped").count(), 3, "{text}");
+}
+
+#[test]
+fn a_version_1_ledger_is_migrated_and_a_newer_one_refused() {
+    let f = Fixture::new();
+    std::fs::create_dir(f.state()).unwrap();
+    std::fs::set_permissions(f.state(), std::fs::Permissions::from_mode(0o700)).unwrap();
+    let path = f.state().join("ledger.sqlite3");
+    let old = rusqlite::Connection::open(&path).unwrap();
+    old.execute_batch(
+        r#"CREATE TABLE runs (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+             label TEXT NOT NULL,
+             started_at INTEGER NOT NULL,
+             recorder_pid INTEGER NOT NULL,
+             ended_at INTEGER,
+             outcome TEXT,
+             CHECK ((ended_at IS NULL) = (outcome IS NULL))
+           );
+           CREATE INDEX runs_by_label ON runs (label, id);
+           INSERT INTO runs (label, started_at, recorder_pid, ended_at, outcome)
+             VALUES ('com.example.job', 1000, 1, 2000, '{"type":"code","code":1}');
+           PRAGMA user_version = 1;"#,
+    )
+    .unwrap();
+    drop(old);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    let history = f.json(&["history", LABEL]);
+    assert_eq!(history["runs"][0]["outcome"]["code"], 1);
+    assert!(history["runs"][0].get("skipped").is_none());
+    f.record(&[], &report(r#"{"version": 1, "skipped": true}"#));
+    assert!(f.ledger().latest(LABEL).unwrap().unwrap().state.skipped());
+    let version: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(version, 2);
+
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute_batch("PRAGMA user_version = 3")
+        .unwrap();
+    let output = f.command(&["--json", "history", LABEL]).output().unwrap();
+    let error: serde_json::Value = serde_json::from_slice(&output.stderr).unwrap();
+    assert_eq!(error["error"]["code"], "unsupported_schema");
 }

@@ -427,7 +427,7 @@ fn recorded_jobs_carry_their_newest_run() {
         jobs::RunStore,
         ledger::{self, Ledger},
         private_storage::Root,
-        runs::{Outcome, Timestamp},
+        runs::{Outcome, RunReport, Timestamp},
     };
     let f = Fixture::new();
     let state = f.path().join("state").display().to_string();
@@ -458,7 +458,12 @@ fn recorded_jobs_carry_their_newest_run() {
         let label: Label = label.parse().unwrap();
         let id = ledger.start(&label, 1, Timestamp(1000)).unwrap();
         ledger
-            .finish(id, Timestamp(2000), Outcome::Code { code: 1 })
+            .finish(
+                id,
+                Timestamp(2000),
+                Outcome::Code { code: 1 },
+                &RunReport::default(),
+            )
             .unwrap();
     }
     drop(ledger);
@@ -479,4 +484,108 @@ fn recorded_jobs_carry_their_newest_run() {
     // History of a job that no longer records is not attributed to it.
     assert!(!reports[1].recorded);
     assert_eq!(reports[1].last_run, None);
+}
+
+#[test]
+fn a_recorded_job_fails_until_a_real_run_succeeds_however_often_it_skips() {
+    use rhythm::jobs::RunStore;
+    use rhythm::{
+        jobs::Label,
+        ledger::{self, Ledger},
+        private_storage::Root,
+        runs::{Outcome, RunReport, Timestamp, Verdict},
+    };
+    let f = Fixture::new();
+    let state = f.path().join("state");
+    f.define(
+        "a.plist",
+        "com.example.poll",
+        &format!(
+            "<key>ProgramArguments</key><array><string>/opt/bin/rhythm</string><string>--data-dir</string><string>{}</string><string>run</string><string>com.example.poll</string><string>--</string><string>/bin/true</string></array>",
+            state.display()
+        ),
+    );
+    // launchd saw the skip exit 0.
+    f.observe(
+        "gui",
+        "com.example.poll",
+        "\truns = 4\n\tlast exit code = 0\n",
+    );
+    let ledger = Ledger::open(Root::open(state.clone()).unwrap(), ledger::READER_WAIT).unwrap();
+    let label: Label = "com.example.poll".parse().unwrap();
+    let run = |code, skipped| {
+        let id = ledger.start(&label, 1, Timestamp(1000)).unwrap();
+        let report = RunReport {
+            skipped,
+            ..RunReport::default()
+        };
+        ledger
+            .finish(id, Timestamp(2000), Outcome::Code { code }, &report)
+            .unwrap();
+    };
+    let ledgers = |_: &RunStore| Ledger::open_existing(Root::open(state.clone()).unwrap()).unwrap();
+    let report = || status::jobs(&f.launchd(), &ledgers).unwrap().remove(0);
+    run(0, false);
+    run(1, false);
+    run(0, true);
+    run(0, true);
+    let failing = report();
+    assert_eq!(failing.health, Health::Failing);
+    assert_eq!(failing.verdict, Some(Verdict::Failed));
+    assert_eq!(failing.last_run.as_ref().unwrap().id, 2);
+    assert_eq!(failing.last_skip.as_ref().unwrap().id, 4);
+    // Another machine's report is judged by the same facts, and only a
+    // recorded job by its recorded verdict.
+    let mut claimed = serde_json::to_value(&failing).unwrap();
+    assert_eq!(claimed["verdict"], "failed");
+    claimed["health"] = "ok".into();
+    let mut unrecorded = claimed.clone();
+    unrecorded["label"] = "com.example.plain".into();
+    unrecorded["recorded"] = false.into();
+    fs::write(
+        f.path().join("remote-response"),
+        serde_json::json!({
+            "type": "status",
+            "hosts": [{"host": "local", "jobs": [claimed, unrecorded]}]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    command_fixture::write(&f.path().join("ssh"), SSH);
+    let ssh = Ssh::at_boundary(f.path().join("ssh"), Duration::from_secs(5));
+    let response = status::gather(&[Target::parse("good").unwrap()], || Ok(vec![]), &ssh);
+    let HostOutcome::Jobs { jobs } = &response.hosts[0].outcome else {
+        panic!("{response:?}")
+    };
+    let health: Vec<Health> = jobs.iter().map(|j| j.health).collect();
+    assert_eq!(health, [Health::Failing, Health::Ok]);
+    run(0, false);
+    let recovered = report();
+    assert_eq!(recovered.health, Health::Ok);
+    assert_eq!(recovered.last_run.as_ref().unwrap().id, 5);
+    assert_eq!(recovered.last_skip, None);
+    // launchd saw a failure after the newest recorded run exited 0: the
+    // recorder could not record that run, and the failure still shows.
+    f.observe(
+        "gui",
+        "com.example.poll",
+        "\truns = 6\n\tlast exit code = 7\n",
+    );
+    assert_eq!(report().health, Health::Failing);
+    // A stop after a good run is launchd's signal, not a failure.
+    let id = ledger.start(&label, 1, Timestamp(3000)).unwrap();
+    ledger
+        .finish(
+            id,
+            Timestamp(4000),
+            Outcome::Stopped { signal: 15 },
+            &RunReport::default(),
+        )
+        .unwrap();
+    f.observe(
+        "gui",
+        "com.example.poll",
+        "\truns = 7\n\tlast terminating signal = Terminated: 15\n",
+    );
+    assert_eq!(report().health, Health::Ok);
 }

@@ -102,35 +102,53 @@ fn table(out: &mut String, jobs: &[JobReport], now: Timestamp, paint: Paint) {
     .unwrap();
 }
 
-/// Recorded runs say when; launchd alone only knows the last exit.
+/// Recorded runs say when; launchd alone only knows the last exit. The newest
+/// real run comes first, then a skip that followed it.
 fn detail(job: &JobReport, now: Timestamp) -> String {
     let recorded = job
         .last_run
         .as_ref()
         .map(|run| (run.started_at, &run.state));
-    match (&job.observation, job.health, recorded) {
-        (_, Health::Invalid, _) => "unreadable definition".into(),
-        (Observation::Unavailable, _, _) => "status unavailable".into(),
-        (Observation::Unloaded, _, _) => "not loaded".into(),
+    let real = match (&job.observation, job.health, recorded) {
+        (_, Health::Invalid, _) => return "unreadable definition".into(),
+        (Observation::Unavailable, _, _) => return "status unavailable".into(),
+        (Observation::Unloaded, _, _) => return "not loaded".into(),
         (Observation::Loaded { pid: Some(pid), .. }, _, Some((started, RunState::Running))) => {
-            format!("pid {pid}, for {}", time_text::duration(now.0 - started.0))
+            return format!("pid {pid}, for {}", time_text::duration(now.0 - started.0));
         }
-        (Observation::Loaded { pid: Some(pid), .. }, _, _) => format!("pid {pid}"),
-        (_, _, Some((_, RunState::Finished { ended_at, outcome }))) => {
-            format!("{outcome}, {}", time_text::ago(*ended_at, now))
-        }
-        (_, _, Some((started, RunState::Lost))) => {
-            format!("lost, started {}", time_text::ago(started, now))
-        }
+        (Observation::Loaded { pid: Some(pid), .. }, _, _) => return format!("pid {pid}"),
         (
+            _,
+            _,
+            Some((
+                _,
+                RunState::Finished {
+                    ended_at, outcome, ..
+                },
+            )),
+        ) => Some(format!("{outcome}, {}", time_text::ago(*ended_at, now))),
+        (_, _, Some((started, RunState::Lost))) => {
+            Some(format!("lost, started {}", time_text::ago(started, now)))
+        }
+        _ => None,
+    };
+    let skipped = job.last_skip.as_ref().map(|run| {
+        let ended = match run.state {
+            RunState::Finished { ended_at, .. } => ended_at,
+            _ => run.started_at,
+        };
+        format!("skipped {}", time_text::ago(ended, now))
+    });
+    match (real, skipped) {
+        (Some(real), Some(skipped)) => format!("{real} · {skipped}"),
+        (Some(text), None) | (None, Some(text)) => text,
+        (None, None) => match job.observation {
             Observation::Loaded {
                 last_exit: Some(exit),
                 ..
-            },
-            _,
-            _,
-        ) => exit.to_string(),
-        (Observation::Loaded { .. }, _, _) => "never exited".into(),
+            } => exit.to_string(),
+            _ => "never exited".into(),
+        },
     }
 }
 

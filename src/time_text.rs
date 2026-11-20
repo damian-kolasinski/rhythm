@@ -53,6 +53,20 @@ where
         .to_string()
 }
 
+/// Local wall time to the minute, with the date only when it is not today.
+pub fn clock<Tz: TimeZone>(at: Timestamp, now: Timestamp, zone: &Tz) -> String
+where
+    Tz::Offset: std::fmt::Display,
+{
+    let at = at.utc().with_timezone(zone);
+    let format = if at.date_naive() == now.utc().with_timezone(zone).date_naive() {
+        "%H:%M"
+    } else {
+        "%Y-%m-%d %H:%M"
+    };
+    at.format(format).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,5 +105,17 @@ mod tests {
     fn renders_local_wall_time() {
         let zone = chrono::FixedOffset::east_opt(3600).unwrap();
         assert_eq!(local(Timestamp(0), &zone), "1970-01-01 01:00:00");
+    }
+
+    #[test]
+    fn renders_clock_times_with_a_date_only_before_today() {
+        let zone = chrono::FixedOffset::east_opt(3600).unwrap();
+        // 1970-01-02 00:30 local.
+        let now = Timestamp(23 * 3_600_000 + 1_800_000);
+        assert_eq!(clock(Timestamp(now.0 - 1_200_000), now, &zone), "00:10");
+        assert_eq!(
+            clock(Timestamp(now.0 - 3_600_000), now, &zone),
+            "1970-01-01 23:30"
+        );
     }
 }

@@ -40,12 +40,19 @@ commands, arguments, and environment values.
 | State | Meaning | Attention |
 | --- | --- | --- |
 | `invalid` | The definition cannot be read, or lacks a label or program, so launchd will not run it. | yes |
-| `failing` | The last run exited nonzero, by a signal, or was killed for memory, and the job is not running now. | yes |
+| `failing` | The last run exited nonzero, by a signal, or was killed for memory, and the job is not running now. For a recorded job, the last run that was neither skipped nor stopped. | yes |
 | `down` | A keep-alive job is not running. | yes |
 | `running` | launchd reports a process. | no |
 | `ok` | The last run exited 0. | no |
 | `idle` | Loaded but has not finished a run yet. | no |
 | `unloaded` | Defined but not loaded; possibly disabled on purpose. | no |
+
+A recorded job is judged by its newest recorded run that was neither skipped
+nor stopped, since launchd's last exit cannot tell a skip or a requested stop
+from a real run. When launchd saw a failure after the newest recorded run
+exited 0, the job is failing all the same: the recorder could not record that
+run. LAST shows the newest real run and a skip that followed it, as in
+`exit 0, 3h ago · skipped 4m ago`.
 
 An empty dictionary, which some installers leave to disable an agent, is not a
 job and is skipped. launchd keeps only the last exit and a run count, so status
@@ -93,6 +100,14 @@ Only regular files are read, up to 1 MiB each.
 activation. `last_exit` is `code`, `signal`, `reclaimed` (launchd stopped an
 idle job that opted into idle exit, which is healthy), or `jetsam` (killed under
 memory pressure), and is absent before a first exit.
+
+A recorded job also has `recorded: true` and, when it has them, `last_run`
+(its newest run that was not skipped), `last_skip` (its newest skipped run,
+when one followed `last_run`), and `verdict` (`succeeded` or `failed`: what its
+newest run that was neither skipped nor stopped says). `verdict` is what the
+ledger recorded, so a job whose unrecorded run failed afterwards can be
+`failing` with a `succeeded` verdict. Runs have the shape `rhythm history`
+returns. Values a newer Rhythm adds to these fields are ignored.
 
 ## Other machines
 

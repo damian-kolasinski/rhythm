@@ -10,6 +10,7 @@ const SKILL: &str = include_str!("../skill/SKILL.md");
 pub const REFERENCES: &[(&str, &str)] = &[
     ("status", include_str!("../docs/status.md")),
     ("runs", include_str!("../docs/runs.md")),
+    ("results", include_str!("../docs/results.md")),
     ("authoring", include_str!("../docs/authoring.md")),
     ("attention", include_str!("../docs/attention.md")),
     ("agents", include_str!("../docs/agents.md")),

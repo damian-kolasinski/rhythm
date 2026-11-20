@@ -4,7 +4,7 @@ use crate::{
     ledger::Ledger,
     operation_error::{Error, Result},
     remote::{self, Ssh},
-    runs::Run,
+    runs::{RecentRuns, Run, RunState, Verdict},
     targets::{self, Target},
 };
 use serde::{Deserialize, Serialize};
@@ -20,26 +20,52 @@ pub struct JobReport {
     pub observation: Observation,
     /// Runs through Rhythm's recorder.
     pub recorded: bool,
-    /// The newest recorded run, for recorded jobs that have one.
+    /// The newest recorded run that was not skipped, for recorded jobs that have one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_run: Option<Run>,
+    /// The newest skipped run, when one followed `last_run`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_skip: Option<Run>,
+    /// What the newest recorded run that was neither skipped nor stopped says
+    /// about the job; health follows it rather than launchd's last exit.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "crate::runs::lenient"
+    )]
+    pub verdict: Option<Verdict>,
     /// Where a local recorded job's runs are kept; never sent to other machines.
     #[serde(skip)]
     pub run_store: Option<RunStore>,
 }
 impl JobReport {
-    fn new(job: Job, last_run: Option<Run>) -> Self {
+    fn new(job: Job, runs: RecentRuns) -> Self {
         Self {
-            health: Health::assess(job.activation.as_ref(), &job.observation),
+            health: Health::assess(
+                job.activation.as_ref(),
+                &job.observation,
+                runs.verdict.filter(|_| {
+                    !unrecorded_failure(&job.observation, &runs.last_run, &runs.last_skip)
+                }),
+            ),
             label: job.label,
             activation: job.activation,
             observation: job.observation,
             recorded: job.recorded.is_some(),
             run_store: job.recorded,
-            last_run,
+            last_run: runs.last_run,
+            last_skip: runs.last_skip,
+            verdict: runs.verdict,
         }
     }
+    /// launchd saw the job fail after its newest recorded run exited 0: a run
+    /// the ledger missed, as when the recorder could not record and ran the
+    /// command alone. Health then follows launchd, whatever `verdict` says.
+    pub fn unrecorded_failure(&self) -> bool {
+        unrecorded_failure(&self.observation, &self.last_run, &self.last_skip)
+    }
     /// A report from another machine is data: health follows from its facts.
+    /// Only a recorded job has recorded runs to judge it by.
     fn reassessed(self) -> Self {
         let job = Job {
             label: self.label,
@@ -47,11 +73,33 @@ impl JobReport {
             recorded: self.recorded.then_some(RunStore::Default),
             observation: self.observation,
         };
+        let runs = RecentRuns {
+            last_run: self.last_run,
+            last_skip: self.last_skip,
+            verdict: self.verdict.filter(|_| self.recorded),
+        };
         Self {
             run_store: None,
-            ..Self::new(job, self.last_run)
+            ..Self::new(job, runs)
         }
     }
+}
+
+/// See [`JobReport::unrecorded_failure`].
+fn unrecorded_failure(
+    observation: &Observation,
+    last_run: &Option<Run>,
+    last_skip: &Option<Run>,
+) -> bool {
+    let launchd_failed = matches!(
+        observation,
+        Observation::Loaded { last_exit: Some(exit), .. } if !exit.succeeded()
+    );
+    let newest = last_skip.as_ref().or(last_run.as_ref());
+    launchd_failed
+        && newest.is_some_and(
+            |run| matches!(&run.state, RunState::Finished { outcome, .. } if outcome.succeeded()),
+        )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,20 +166,20 @@ impl<'a> ReportReader<'a> {
     }
 
     pub(crate) fn read(&mut self, job: Job) -> Result<JobReport> {
-        let last_run = match &job.recorded {
+        let runs = match &job.recorded {
             Some(store) => {
                 let ledger = self
                     .opened
                     .entry(store.clone())
                     .or_insert_with(|| (self.ledgers)(store));
                 match ledger {
-                    Some(ledger) => ledger.latest(&job.label)?,
-                    None => None,
+                    Some(ledger) => ledger.recent(&job.label)?,
+                    None => RecentRuns::default(),
                 }
             }
-            None => None,
+            None => RecentRuns::default(),
         };
-        Ok(JobReport::new(job, last_run))
+        Ok(JobReport::new(job, runs))
     }
 }
 

@@ -2,7 +2,7 @@
 //! starts failing and when it recovers, never for every repeated failure.
 use crate::{
     authoring::OWNED_PREFIX,
-    runs::{Outcome, RunState},
+    runs::{Outcome, RunState, Verdict},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,12 +11,16 @@ pub enum Notice {
     Recovered,
 }
 impl Notice {
-    /// `previous` is the job's run before this one, if it had one.
-    pub fn after(previous: Option<&RunState>, outcome: Outcome) -> Option<Self> {
+    /// `previous` is the job's last run before `run` that said whether the
+    /// job works. A run that says nothing, as a skip or a requested stop, is
+    /// neither a failure nor a recovery.
+    pub fn after(previous: Option<&RunState>, run: &RunState) -> Option<Self> {
         let previously_failed = previous.is_some_and(RunState::failed);
-        match (outcome.succeeded(), outcome.failed(), previously_failed) {
-            (_, true, false) => Some(Self::Failed(outcome)),
-            (true, _, true) => Some(Self::Recovered),
+        match (run, run.verdict()) {
+            (RunState::Finished { outcome, .. }, Some(Verdict::Failed)) if !previously_failed => {
+                Some(Self::Failed(*outcome))
+            }
+            (_, Some(Verdict::Succeeded)) if previously_failed => Some(Self::Recovered),
             _ => None,
         }
     }
@@ -40,41 +44,62 @@ impl Notice {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::runs::Timestamp;
+    use crate::runs::{RunReport, Timestamp};
 
-    fn finished(code: i32) -> RunState {
+    fn ended(outcome: Outcome, skipped: bool) -> RunState {
         RunState::Finished {
             ended_at: Timestamp(0),
-            outcome: Outcome::Code { code },
+            outcome,
+            report: RunReport {
+                skipped,
+                ..RunReport::default()
+            },
         }
+    }
+    fn finished(code: i32) -> RunState {
+        ended(Outcome::Code { code }, false)
     }
 
     #[test]
     fn notifies_on_transitions_only() {
         let failed = Outcome::Code { code: 1 };
-        let ok = Outcome::Code { code: 0 };
-        assert_eq!(Notice::after(None, failed), Some(Notice::Failed(failed)));
-        assert_eq!(Notice::after(None, ok), None);
+        let ok = finished(0);
         assert_eq!(
-            Notice::after(Some(&finished(0)), failed),
+            Notice::after(None, &finished(1)),
             Some(Notice::Failed(failed))
         );
-        assert_eq!(Notice::after(Some(&finished(2)), failed), None);
-        assert_eq!(Notice::after(Some(&RunState::Lost), failed), None);
+        assert_eq!(Notice::after(None, &ok), None);
         assert_eq!(
-            Notice::after(Some(&finished(2)), ok),
+            Notice::after(Some(&finished(0)), &finished(1)),
+            Some(Notice::Failed(failed))
+        );
+        assert_eq!(Notice::after(Some(&finished(2)), &finished(1)), None);
+        assert_eq!(Notice::after(Some(&RunState::Lost), &finished(1)), None);
+        assert_eq!(
+            Notice::after(Some(&finished(2)), &ok),
             Some(Notice::Recovered)
         );
         assert_eq!(
-            Notice::after(Some(&RunState::Lost), ok),
+            Notice::after(Some(&RunState::Lost), &ok),
             Some(Notice::Recovered)
         );
-        assert_eq!(Notice::after(Some(&finished(0)), ok), None);
-        assert_eq!(Notice::after(None, Outcome::Stopped { signal: 15 }), None);
+        assert_eq!(Notice::after(Some(&finished(0)), &ok), None);
+        let stopped = ended(Outcome::Stopped { signal: 15 }, false);
+        assert_eq!(Notice::after(None, &stopped), None);
         assert_eq!(
-            Notice::after(Some(&RunState::Running), Outcome::SpawnFailed),
+            Notice::after(
+                Some(&RunState::Running),
+                &ended(Outcome::SpawnFailed, false)
+            ),
             Some(Notice::Failed(Outcome::SpawnFailed))
         );
+    }
+
+    #[test]
+    fn a_skip_is_neither_a_failure_nor_a_recovery() {
+        let skip = ended(Outcome::Code { code: 0 }, true);
+        assert_eq!(Notice::after(Some(&finished(1)), &skip), None);
+        assert_eq!(Notice::after(None, &skip), None);
     }
 
     #[test]

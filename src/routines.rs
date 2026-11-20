@@ -46,6 +46,8 @@ pub struct CronEntry {
     pub schedule: String,
 }
 
+// An inventory holds a few dozen routines, built once per refresh.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub enum Routine {
     Launchd {

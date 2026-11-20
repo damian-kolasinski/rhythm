@@ -7,7 +7,7 @@ use rhythm::{
     ledger::{self, Ledger},
     operation_error::Error,
     private_storage::Root,
-    runs::{Outcome, Timestamp},
+    runs::{Outcome, RunReport, Timestamp},
     schedule_input::{self, ScheduleInput},
 };
 use std::{
@@ -689,7 +689,12 @@ fn kick_shows_only_the_run_it_started() {
         let ledger = Ledger::open(Root::open(state.clone()).unwrap(), ledger::READER_WAIT).unwrap();
         let id = ledger.start(&report, 1, Timestamp(1000)).unwrap();
         ledger
-            .finish(id, Timestamp(2000), Outcome::Code { code: 0 })
+            .finish(
+                id,
+                Timestamp(2000),
+                Outcome::Code { code: 0 },
+                &RunReport::default(),
+            )
             .unwrap();
     }
     // This kick's run was never recorded, as when the recorder cannot start.

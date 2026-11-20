@@ -223,16 +223,20 @@ enum Commands {
         #[arg(long)]
         forward: bool,
     },
-    /// List a job's recorded runs, newest first.
+    /// List a job's recorded runs, newest first, with consecutive skipped runs on one line.
     History {
         label: String,
+        /// How many runs that were not skipped; the skipped runs among them come along.
         #[arg(long, default_value_t = 20)]
         limit: u32,
+        /// List every skipped run on its own line.
+        #[arg(long)]
+        all: bool,
         /// Read another machine over ssh.
         #[arg(long)]
         host: Option<String>,
     },
-    /// Print the output of a job's newest recorded run, or of `--run ID`.
+    /// Print the output of a job's newest recorded run that was not skipped, or of `--run ID`.
     Logs {
         label: String,
         #[arg(long, value_name = "ID")]
@@ -557,7 +561,12 @@ fn main() -> ExitCode {
             recorder::drain(dir, forward);
             ExitCode::SUCCESS
         }
-        Commands::History { label, limit, host } => {
+        Commands::History {
+            label,
+            limit,
+            all,
+            host,
+        } => {
             let result = authoring::resolve(&label).and_then(|label| match remote(host)? {
                 Some(host) => Ssh::system().call(
                     &host,
@@ -566,7 +575,12 @@ fn main() -> ExitCode {
                 None => run_history::history(local_ledger(cli.data_dir)?.as_ref(), &label, limit),
             });
             respond(json, result, |history| {
-                history_render::render(history, Timestamp::now(), &chrono::Local)
+                let skips = if all {
+                    history_render::Skips::List
+                } else {
+                    history_render::Skips::Collapse
+                };
+                history_render::render(history, Timestamp::now(), &chrono::Local, skips)
             })
         }
         Commands::Logs {

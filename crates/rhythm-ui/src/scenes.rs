@@ -2,7 +2,7 @@
 use rhythm::{
     jobs::{Activation, Calendar, Exit, Health, Observation, Trigger},
     routines::{CronEntry, CronTable, LaunchdSource, Routine, Snapshot, Source},
-    runs::{Outcome, Run, RunState, Timestamp},
+    runs::{Outcome, Run, RunReport, RunState, Timestamp},
     status::JobReport,
 };
 
@@ -128,6 +128,7 @@ fn routines(window: &mut Window) {
                     state: exit.map_or(RunState::Running, |code| RunState::Finished {
                         ended_at,
                         outcome: Outcome::Code { code },
+                        report: RunReport::default(),
                     }),
                 });
                 let report = JobReport {
@@ -141,6 +142,8 @@ fn routines(window: &mut Window) {
                     },
                     recorded: source == LaunchdSource::UserAgent,
                     last_run,
+                    last_skip: None,
+                    verdict: None,
                     run_store: None,
                 };
                 Routine::Launchd {
