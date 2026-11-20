@@ -1,11 +1,12 @@
 //! Deterministic scenarios for snapshots and the demonstration.
 use rhythm::{
     jobs::{Activation, Calendar, Exit, Health, Observation, Trigger},
+    routines::{CronEntry, CronTable, LaunchdSource, Routine, Snapshot, Source},
     runs::{Outcome, Run, RunState, Timestamp},
     status::JobReport,
 };
 
-use crate::{app::Window, updates::Offer};
+use crate::{app::Window, routine::Inventory, updates::Offer};
 
 type Scene = (&'static str, fn(&mut Window));
 
@@ -13,6 +14,7 @@ pub const SCENES: &[Scene] = &[
     ("loading", loading),
     ("empty", empty),
     ("routines", routines),
+    ("partial", partial),
     ("stale", stale),
     ("unavailable", unavailable),
     ("release-available", release_available),
@@ -30,7 +32,17 @@ fn loading(window: &mut Window) {
 fn empty(window: &mut Window) {
     loading(window);
     window.freshness = Some(NOW);
-    window.snapshot = Some(Vec::new());
+    window.snapshot = Some(Inventory::default());
+}
+
+fn partial(window: &mut Window) {
+    routines(window);
+    window
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .incomplete
+        .insert(Source::SystemCrontabs);
 }
 
 fn stale(window: &mut Window) {
@@ -78,39 +90,35 @@ fn routines(window: &mut Window) {
     };
     let entries = [
         (
-            "dev.rhythm.archive-samples",
+            "com.example.sync-catalog",
+            LaunchdSource::Daemon,
             Health::Failing,
-            vec![calendar(8, None)],
+            vec![Trigger::Interval { seconds: 3600 }],
             Some(1),
-            840_000,
+            0,
         ),
         (
             "com.example.index-samples",
+            LaunchdSource::UserAgent,
             Health::Running,
             vec![Trigger::Interval { seconds: 900 }],
             None,
             120_000,
         ),
         (
-            "dev.rhythm.build-summary",
+            "dev.rhythm.archive-samples",
+            LaunchdSource::UserAgent,
             Health::Ok,
-            vec![calendar(9, Some(1))],
+            vec![calendar(8, None)],
             Some(0),
-            172_800_000,
-        ),
-        (
-            "dev.rhythm.clean-samples",
-            Health::Idle,
-            Vec::new(),
-            None,
-            0,
+            840_000,
         ),
     ];
-    window.snapshot = Some(
-        entries
-            .into_iter()
-            .enumerate()
-            .map(|(index, (label, health, triggers, exit, elapsed))| {
+    let routines = entries
+        .into_iter()
+        .enumerate()
+        .map(
+            |(index, (label, source, health, triggers, exit, elapsed))| {
                 let ended_at = Timestamp(NOW.0 - elapsed);
                 let pid = (health == Health::Running).then_some(1);
                 let last_run = (elapsed > 0).then(|| Run {
@@ -122,21 +130,38 @@ fn routines(window: &mut Window) {
                         outcome: Outcome::Code { code },
                     }),
                 });
-                JobReport {
+                let report = JobReport {
                     label: label.into(),
                     health,
                     activation: Some(Activation::Triggered { triggers }),
                     observation: Observation::Loaded {
                         pid,
-                        runs: u64::from(last_run.is_some()),
+                        runs: 1,
                         last_exit: exit.map(|code| Exit::Code { code }),
                     },
-                    recorded: true,
+                    recorded: source == LaunchdSource::UserAgent,
                     last_run,
                     run_store: None,
+                };
+                Routine::Launchd {
+                    source,
+                    instance: 0,
+                    report,
+                    additional_timers: Vec::new(),
                 }
-                .into()
-            })
-            .collect(),
+            },
+        )
+        .chain(std::iter::once(Routine::Cron(CronEntry {
+            table: CronTable::User,
+            line: 4,
+            schedule: "Daily 03:15".into(),
+        })))
+        .collect();
+    window.snapshot = Some(
+        Snapshot {
+            routines,
+            incomplete: Default::default(),
+        }
+        .into(),
     );
 }

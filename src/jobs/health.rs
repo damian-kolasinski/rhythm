@@ -6,6 +6,7 @@ use std::fmt;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum Observation {
+    Unavailable,
     Unloaded,
     Loaded {
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -62,6 +63,8 @@ pub enum Health {
     Idle,
     /// Defined but not loaded; possibly disabled on purpose.
     Unloaded,
+    /// No observation is available from the job's scheduler.
+    Unknown,
 }
 impl Health {
     pub fn assess(activation: Option<&Activation>, observation: &Observation) -> Self {
@@ -69,6 +72,7 @@ impl Health {
             return Self::Invalid;
         };
         match *observation {
+            Observation::Unavailable => Self::Unknown,
             Observation::Unloaded => Self::Unloaded,
             Observation::Loaded { pid: Some(_), .. } => Self::Running,
             Observation::Loaded { last_exit, .. } => match (activation, last_exit) {
@@ -91,6 +95,7 @@ impl Health {
             Self::Ok => "ok",
             Self::Idle => "idle",
             Self::Unloaded => "unloaded",
+            Self::Unknown => "unknown",
         }
     }
 }

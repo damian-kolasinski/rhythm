@@ -14,6 +14,10 @@ impl Activation {
     pub fn is_service(&self) -> bool {
         matches!(self, Self::Service { .. })
     }
+
+    pub fn is_periodic(&self) -> bool {
+        matches!(self, Self::Triggered { triggers } if triggers.iter().any(Trigger::is_periodic))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -26,6 +30,12 @@ pub enum Trigger {
     QueueDirectory,
     Socket,
     Mount,
+}
+
+impl Trigger {
+    fn is_periodic(&self) -> bool {
+        matches!(self, Self::Interval { .. } | Self::Calendar(_))
+    }
 }
 
 /// A calendar match; an absent field matches every value, as in launchd.

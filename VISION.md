@@ -10,8 +10,9 @@ when a job starts failing. Rhythm makes that work visible without replacing it.
 - **launchd runs jobs; Rhythm observes and records them.** No second scheduler,
   no Rhythm daemon. Existing jobs keep working unchanged until the operator
   chooses to record them.
-- **One inventory.** `rhythm status` lists every user agent on this machine or
-  others over ssh, with jobs needing attention first.
+- **Jobs needing attention first.** The CLI and desktop share launchd health and
+  recorded run history. The CLI lists user agents locally and over ssh. The
+  desktop also shows external periodic jobs on the local Mac.
 - **Agent-first.** Noninteractive commands, structured JSON, predictable errors,
   and fixed messages that never echo private values.
 - **Failures reach someone.** A job that starts failing notifies the operator,
@@ -21,9 +22,12 @@ when a job starts failing. Rhythm makes that work visible without replacing it.
 
 ## Scope
 
-User LaunchAgents on macOS, one user per machine, and other machines reached by
-the operator's own ssh configuration. System daemons, fleet management,
-non-launchd supervisors, and secret management are out of scope until needed.
+Rhythm authors and records user LaunchAgents on macOS. The CLI can inspect
+other machines reached through the operator's ssh configuration. The desktop
+also inventories local periodic system launchd jobs and readable crontabs.
+System jobs and cron entries are read-only.
+Fleet management, additional supervisors, and secret management are out of scope
+until needed.
 
 ## Architecture
 

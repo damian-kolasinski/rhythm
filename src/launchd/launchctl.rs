@@ -17,6 +17,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 /// `kickstart` waits out the remainder before returning.
 const KICKSTART_TIMEOUT: Duration = Duration::from_secs(20);
 const MAX_OUTPUT: u64 = 1024 * 1024;
+const MAX_SNAPSHOT: u64 = 32 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Domain {
@@ -47,6 +48,15 @@ pub struct Launchctl {
 impl Launchctl {
     pub fn new(program: PathBuf, user: u32) -> Self {
         Self { program, user }
+    }
+
+    pub fn snapshot(&self) -> Option<super::snapshot::LoadedJobs> {
+        let mut command = Command::new(&self.program);
+        command.arg("dumpstate");
+        let output = bounded_command::run(command, TIMEOUT, MAX_SNAPSHOT).ok()?;
+        output.status.success().then(|| {
+            super::snapshot::LoadedJobs::parse(&String::from_utf8_lossy(&output.stdout), self.user)
+        })
     }
     fn domain(&self, domain: Domain) -> String {
         match domain {

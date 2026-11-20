@@ -240,6 +240,7 @@ pub fn remove(supervisor: &impl Supervisor, label: &Label) -> Result<()> {
 
 fn refuse_running(supervisor: &impl Supervisor, label: &Label, restart: bool) -> Result<()> {
     match supervisor.observe(label)? {
+        Observation::Unavailable => Err(Error::SupervisorUnavailable),
         Observation::Loaded { pid: Some(_), .. } if !restart => Err(Error::RestartRequired),
         _ => Ok(()),
     }

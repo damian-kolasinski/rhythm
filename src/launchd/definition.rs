@@ -8,6 +8,8 @@ use plist::{Dictionary, Value};
 pub struct Definition {
     pub label: String,
     pub activation: Activation,
+    /// Timers can coexist with KeepAlive in existing launchd definitions.
+    pub service_timers: Vec<Trigger>,
     /// Runs through `rhythm run` under its own label.
     pub recorded: Option<RunStore>,
 }
@@ -76,6 +78,11 @@ fn job(plist: &Dictionary) -> Option<Definition> {
         .map(|w| w.data_dir.map_or(RunStore::Default, RunStore::Directory));
     Some(Definition {
         label,
+        service_timers: if activation.is_service() {
+            timers(plist).unwrap_or_default()
+        } else {
+            Vec::new()
+        },
         activation,
         recorded,
     })
@@ -86,19 +93,7 @@ fn triggers(plist: &Dictionary) -> Option<Vec<Trigger>> {
     if flag(plist, "RunAtLoad") {
         triggers.push(Trigger::AtLoad);
     }
-    if let Some(seconds) = plist.get("StartInterval") {
-        let seconds = seconds.as_unsigned_integer().filter(|s| *s > 0)?;
-        triggers.push(Trigger::Interval { seconds });
-    }
-    match plist.get("StartCalendarInterval") {
-        None => {}
-        Some(Value::Array(entries)) => {
-            for entry in entries {
-                triggers.push(Trigger::Calendar(calendar(entry.as_dictionary()?)?));
-            }
-        }
-        Some(entry) => triggers.push(Trigger::Calendar(calendar(entry.as_dictionary()?)?)),
-    }
+    triggers.extend(timers(plist)?);
     for (key, trigger) in [
         ("WatchPaths", Trigger::PathChange),
         ("QueueDirectories", Trigger::QueueDirectory),
@@ -114,11 +109,29 @@ fn triggers(plist: &Dictionary) -> Option<Vec<Trigger>> {
     Some(triggers)
 }
 
+fn timers(plist: &Dictionary) -> Option<Vec<Trigger>> {
+    let mut timers = Vec::new();
+    if let Some(seconds) = plist.get("StartInterval") {
+        let seconds = seconds.as_unsigned_integer().filter(|s| *s > 0)?;
+        timers.push(Trigger::Interval { seconds });
+    }
+    match plist.get("StartCalendarInterval") {
+        None => {}
+        Some(Value::Array(entries)) => {
+            for entry in entries {
+                timers.push(Trigger::Calendar(calendar(entry.as_dictionary()?)?));
+            }
+        }
+        Some(entry) => timers.push(Trigger::Calendar(calendar(entry.as_dictionary()?)?)),
+    }
+    Some(timers)
+}
+
 fn flag(plist: &Dictionary, key: &str) -> bool {
     plist.get(key).and_then(Value::as_boolean) == Some(true)
 }
 
-fn calendar(entry: &Dictionary) -> Option<Calendar> {
+pub(super) fn calendar(entry: &Dictionary) -> Option<Calendar> {
     let field = |key: &str, max: u64| -> Option<Option<u8>> {
         match entry.get(key) {
             None => Some(None),

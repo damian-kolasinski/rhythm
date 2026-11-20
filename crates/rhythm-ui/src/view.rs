@@ -1,19 +1,39 @@
-use rhythm::{jobs::Health, time_text};
+use rhythm::{
+    jobs::Health,
+    routines::{Ownership, Source},
+    time_text,
+};
 use rune::{Cx, El, ScrollSpec, col, el, row, text};
-use rune_kit::{Button, ButtonVariant, Kit};
+use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl};
 
-use crate::{app::Window, routine::Routine, theme};
+use crate::{
+    app::Window,
+    routine::{Filter, Routine},
+    theme,
+};
 
 pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
     let kit = theme::kit(cx.system_dark());
-    let rows = state.snapshot.as_deref().unwrap_or_default();
+    let all = state
+        .snapshot
+        .as_ref()
+        .map_or(&[][..], |inventory| inventory.rows.as_slice());
+    let rows: Vec<_> = all
+        .iter()
+        .filter(|job| state.filter.includes(job.ownership))
+        .collect();
     let count = rows
         .iter()
         .filter(|routine| routine.state.needs_attention())
         .count();
     let mut meta = row().gap(theme::GAP);
     if state.snapshot.is_some() {
-        meta = meta.child(quiet(format!("{} on this Mac", rows.len()), &kit));
+        let summary = if state.filter == Filter::All {
+            format!("{} on this Mac", rows.len())
+        } else {
+            format!("{} of {} on this Mac", rows.len(), all.len())
+        };
+        meta = meta.child(quiet(summary, &kit));
     }
     if count > 0 {
         let verb = if count == 1 { "needs" } else { "need" };
@@ -111,16 +131,40 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
                 .child(text(hint).font(theme::secondary()).color(kit.c.warning.fg)),
         );
     }
+    if let Some(inventory) = &state.snapshot {
+        if !inventory.incomplete.is_empty() {
+            let sources = inventory
+                .incomplete
+                .iter()
+                .map(|source| source_name(*source))
+                .collect::<Vec<_>>()
+                .join(", ");
+            body = body.child(quiet(format!("Some sources unavailable · {sources}"), &kit).wrap());
+        }
+        let selected = Filter::OPTIONS
+            .iter()
+            .position(|filter| *filter == state.filter);
+        body = body.child(
+            SegmentedControl::new(&Filter::OPTIONS.map(Filter::label), selected)
+                .label("Routine ownership")
+                .width(Some(234.0))
+                .on_pick(|window: &mut Window, index, _| window.filter = Filter::OPTIONS[index])
+                .build(&kit)
+                .key("ownership-filter"),
+        );
+    }
     let content = if !rows.is_empty() {
-        table(state, rows, &kit)
+        table(state, &rows, &kit)
     } else {
-        let (title, help) = match (state.snapshot.is_some(), state.failed) {
-            (true, _) => (
+        let (title, help) = match (state.snapshot.is_some(), state.failed, state.filter) {
+            (true, _, Filter::All) => ("No routines found", ""),
+            (true, _, Filter::Rhythm) => (
                 "No Rhythm-managed routines on this Mac",
                 "Create one with rhythm add or record an existing job with rhythm adopt.",
             ),
-            (false, true) => ("Routines unavailable", ""),
-            (false, false) => ("Reading routines…", ""),
+            (true, _, Filter::External) => ("No external periodic jobs found", ""),
+            (false, true, _) => ("Routines unavailable", ""),
+            (false, false, _) => ("Reading routines…", ""),
         };
         col()
             .w_full()
@@ -155,7 +199,7 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
         )
 }
 
-fn table(state: &Window, rows: &[Routine], kit: &Kit) -> El {
+fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
     let headings =
         ["Routine", "State", "Trigger", "Latest activity"].map(|title| quiet(title, kit));
     let mut list = col().w_full();
@@ -171,6 +215,7 @@ fn table(state: &Window, rows: &[Routine], kit: &Kit) -> El {
             latest = latest.child(quiet(timing, kit));
         }
         let name = col()
+            .gap(1.0)
             .child(
                 text(job.name.clone())
                     .font(theme::strong())
@@ -183,7 +228,8 @@ fn table(state: &Window, rows: &[Routine], kit: &Kit) -> El {
                     .color(kit.c.text_muted)
                     .truncate_middle()
                     .selectable(true),
-            );
+            )
+            .child(ownership_badge(job.ownership, kit));
         list = list
             .child(
                 columns([
@@ -196,8 +242,8 @@ fn table(state: &Window, rows: &[Routine], kit: &Kit) -> El {
                     latest,
                 ])
                 .min_h(55.0)
-                .py(7.0)
-                .key(job.label.clone()),
+                .py(5.0)
+                .key(job.key.clone()),
             )
             .child(rule(kit));
     }
@@ -208,7 +254,7 @@ fn table(state: &Window, rows: &[Routine], kit: &Kit) -> El {
         .scroll(ScrollSpec {
             stick_bottom: false,
         })
-        .key("routine-list")
+        .key(format!("routine-list-{}", state.filter.label()))
         .child(list);
     col()
         .w_full()
@@ -236,6 +282,7 @@ fn pill(state: Health, kit: &Kit) -> El {
         Health::Ok => ("OK", kit.c.success.bg, kit.c.success.fg),
         Health::Idle => ("Idle", kit.c.layer_01, kit.c.text_muted),
         Health::Unloaded => ("Unloaded", kit.c.layer_01, kit.c.text_muted),
+        Health::Unknown => ("Unknown", kit.c.layer_01, kit.c.text_muted),
     };
     row()
         .self_start()
@@ -247,6 +294,32 @@ fn pill(state: Health, kit: &Kit) -> El {
         .fill(fill)
         .child(el().size(5.0, 5.0).radius(2.5).fill(ink))
         .child(text(label).font(theme::secondary()).color(ink))
+}
+
+fn ownership_badge(ownership: Ownership, kit: &Kit) -> El {
+    let (label, fill, ink) = match ownership {
+        Ownership::Created => ("Created by Rhythm", kit.c.info.bg, kit.c.info.fg),
+        Ownership::Adopted => ("Adopted by Rhythm", kit.c.info.bg, kit.c.info.fg),
+        Ownership::External => ("External", kit.c.layer_01, kit.c.text_muted),
+    };
+    row()
+        .self_start()
+        .center_y()
+        .px(6.0)
+        .h(17.0)
+        .radius(4.0)
+        .fill(fill)
+        .child(text(label).font(theme::secondary()).color(ink))
+}
+
+fn source_name(source: Source) -> &'static str {
+    match source {
+        Source::UserLaunchAgents => "user LaunchAgents",
+        Source::SystemLaunchdDefinitions => "system launchd definitions",
+        Source::LaunchdStatus => "launchd status",
+        Source::UserCrontab => "user crontab",
+        Source::SystemCrontabs => "system crontabs",
+    }
 }
 
 fn quiet(value: impl Into<String>, kit: &Kit) -> El {

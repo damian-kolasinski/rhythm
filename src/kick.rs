@@ -50,6 +50,7 @@ pub fn kick(
     ledgers: &dyn Fn(&RunStore) -> Option<Ledger>,
 ) -> Result<KickResponse> {
     let before = match supervisor.observe(label)? {
+        Observation::Unavailable => return Err(Error::SupervisorUnavailable),
         Observation::Unloaded => return Err(Error::JobNotLoaded),
         Observation::Loaded { pid: Some(_), .. } => return Err(Error::Busy),
         Observation::Loaded { runs, .. } => runs,
@@ -80,6 +81,7 @@ pub fn kick(
                 runs,
                 last_exit,
             } if runs > before => break last_exit,
+            Observation::Unavailable => return Err(Error::SupervisorUnavailable),
             Observation::Unloaded => return Err(Error::JobNotLoaded),
             _ if Instant::now() >= deadline => return Err(Error::TimedOut),
             _ => std::thread::sleep(POLL),

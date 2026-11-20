@@ -9,7 +9,7 @@ window, refresh, and the upgrade flow with sample data.
 
 ```sh
 rhythm demo                      # a two-minute tour with disposable jobs
-rhythm ui                        # open the installed macOS routines window
+rhythm ui                        # see local periodic jobs and Rhythm-recorded routines
 rhythm status                    # every user launchd job, attention first
 rhythm status --host devbox      # another machine over ssh
 rhythm add report --daily 08:07 -- /path/to/report   # dev.rhythm.report
