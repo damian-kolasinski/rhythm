@@ -34,8 +34,14 @@ pub(super) fn verify(
         .prefix("download-")
         .tempdir_in(&paths.area)
         .map_err(|_| Error::ReleaseVerificationFailed)?;
-    let root = scratch.path();
-    let config = root.join("mise.toml");
+    let root = scratch
+        .path()
+        .canonicalize()
+        .map_err(|_| Error::ReleaseVerificationFailed)?;
+    // mise excludes the ceiling itself from configuration discovery.
+    let project = root.join("project");
+    fs::create_dir(&project).map_err(|_| Error::ReleaseVerificationFailed)?;
+    let config = project.join("mise.toml");
     let empty = root.join("empty.toml");
     fs::write(&empty, "").map_err(|_| Error::ReleaseVerificationFailed)?;
     fs::write(&config, format!(
@@ -51,11 +57,11 @@ pub(super) fn verify(
             }
         }
         command
-            .current_dir(root)
+            .current_dir(&project)
             .env("MISE_YES", "1")
             .env("MISE_CONFIG_FILE", &config)
             .env("MISE_GLOBAL_CONFIG_FILE", &empty)
-            .env("MISE_CEILING_PATHS", root)
+            .env("MISE_CEILING_PATHS", &root)
             .env("MISE_DATA_DIR", root.join("data"))
             .env("MISE_CACHE_DIR", root.join("cache"))
             .env("MISE_STATE_DIR", root.join("state"))
@@ -68,12 +74,11 @@ pub(super) fn verify(
         config.to_str().ok_or(Error::ReleaseVerificationFailed)?,
     ])?;
     invoke(&["install"])?;
-    let binary = path(&invoke(&["which", "rhythm"])?)?;
-    let directory = binary.parent().ok_or(Error::ReleaseVerificationFailed)?;
-    let safe_root = root
-        .canonicalize()
-        .map_err(|_| Error::ReleaseVerificationFailed)?;
-    if !directory.starts_with(safe_root.join("data"))
+    // `mise which` returns a shim symlink for packslip tools.
+    let request = format!("{}@{version}", mise.tool);
+    let directory = release_directory(&invoke(&["where", &request])?)?;
+    let binary = directory.join("rhythm");
+    if !directory.starts_with(root.join("data"))
         || !regular(&directory.join(".mise-packslip.json"))
         || !regular(&binary)
         || !regular(&directory.join("rhythm-ui"))
@@ -84,17 +89,13 @@ pub(super) fn verify(
     Ok(Verified { scratch, binary })
 }
 
-pub(super) fn path(bytes: &[u8]) -> Result<PathBuf> {
+fn release_directory(bytes: &[u8]) -> Result<PathBuf> {
     let path = PathBuf::from(
         std::str::from_utf8(bytes)
             .map_err(|_| Error::ReleaseVerificationFailed)?
             .trim(),
     );
-    if !path.is_absolute() {
-        return Err(Error::ReleaseVerificationFailed);
-    }
-    // Check the original leaf separately; an executable symlink isn't a staged payload.
-    if fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_symlink()) {
+    if !path.is_absolute() || !fs::symlink_metadata(&path).is_ok_and(|metadata| metadata.is_dir()) {
         return Err(Error::ReleaseVerificationFailed);
     }
     path.canonicalize()
