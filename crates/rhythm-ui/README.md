@@ -13,6 +13,16 @@ shows its problem count. Clicking it opens a dialog listing those problems as
 problems are resolved. When skipped runs followed the newest real run, the
 latest activity adds when the routine last checked.
 
+Each routine Rhythm created or adopted has a "⋯" button, and a secondary
+click on its row opens the same menu. **Remove…** opens a confirmation that
+says what stays: the routine's recorded runs and, when it runs a script (a
+program starting with `#!`, or a file given to an interpreter such as
+`python3`), that script, with **Show in Finder**. Removal unloads the job and
+deletes its definition, as `rhythm remove` does, stopping a run in progress.
+Once it is gone, a notice repeats where the script is. External routines,
+system jobs, and cron entries offer no actions.
+[Watch removal with sample data](../../docs/rhythm-macos-remove-demo.mp4).
+
 Run the development window with `cargo run --locked -p rhythm-ui`. Add
 `-- --scene routines` for a window with synthetic data. `--list-scenes`
 lists the scenes available for snapshots.
@@ -33,6 +43,10 @@ guide DM Sans headings, body, and labels. Read these frames with
 monospace family. DM Sans is bundled under the SIL Open Font License.
 
 ## Verification
+
+Render the removal demonstration with
+`cargo run --locked -p rhythm-ui -- --scene routines --theme light --size 750x462 --scale 2 --fps 30 --pointer --script crates/rhythm-ui/demos/remove-routine.json --video docs/rhythm-macos-remove-demo.mp4`
+(needs `ffmpeg`).
 
 `cargo test --locked -p rhythm-ui --test window` renders the actual view with
 Metal in both appearances. A per-channel difference of 8 accommodates

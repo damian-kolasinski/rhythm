@@ -5,7 +5,8 @@ each run did, and tells you and your next agent session when one breaks.
 launchd keeps running the jobs; Rhythm makes them visible and predictable.
 
 [Watch the macOS companion demo](docs/rhythm-macos-demo.mp4) for the routines
-window, refresh, and the upgrade flow with sample data.
+window, refresh, and the upgrade flow with sample data, and
+[removing a routine](docs/rhythm-macos-remove-demo.mp4) that runs a script.
 
 ```sh
 rhythm demo                      # a two-minute tour with disposable jobs
@@ -15,6 +16,7 @@ rhythm status --host devbox      # another machine over ssh
 rhythm add report --daily 08:07 -- /path/to/report   # dev.rhythm.report
 rhythm kick report --wait        # run now and see how it ended
 rhythm adopt com.example.scan    # record an existing job's runs
+rhythm remove com.example.scan   # delete a job Rhythm created or adopted
 rhythm history report            # recorded runs, newest first
 rhythm logs report               # output of the newest run
 rhythm attention --since-last-seen --as claude  # what broke since last look

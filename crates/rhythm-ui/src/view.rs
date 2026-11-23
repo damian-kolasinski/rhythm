@@ -8,9 +8,9 @@ use rune_kit::{Button, ButtonVariant, Kit, SegmentedControl};
 
 use crate::{
     app::Window,
-    problems,
+    problems, removal_view,
     routine::{Filter, Routine},
-    theme,
+    routine_menu, theme,
 };
 
 pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
@@ -118,6 +118,9 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
                 ),
         );
     }
+    if let Some(removed) = &state.removed {
+        body = body.child(removal_view::notice(removed, &kit));
+    }
     if state.failed {
         let hint = if state.snapshot.is_some() {
             "Showing the last successful refresh."
@@ -160,8 +163,9 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
                 .key("ownership-filter"),
         );
     }
+    let mut overlays = Vec::new();
     let content = if !rows.is_empty() {
-        table(state, &rows, &kit)
+        table(state, &rows, &kit, &mut overlays)
     } else {
         let (title, help) = match (state.snapshot.is_some(), state.failed, state.filter) {
             (true, _, Filter::All) => ("No routines found", ""),
@@ -185,7 +189,6 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
         .freshness
         .map(|at| format!("Routines refreshed {}", time_text::ago(at, state.now)))
         .unwrap_or_default();
-    let mut overlays = Vec::new();
     if let Some(routine) = state.inspected() {
         // Kit's root fills the window, and its dialog keys its header.
         let room = problems::Room {
@@ -197,6 +200,17 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
                 .map_or(problems::Room::DEFAULT.header, |[_, h]| h),
         };
         problems::dialog(routine, state.now, room, &kit, &mut overlays);
+    }
+    if let Some(flow) = &state.removal {
+        let room = problems::Room {
+            window: cx
+                .layout_size("kit-root")
+                .map_or(problems::Room::DEFAULT.window, |[_, h]| h),
+            header: cx
+                .layout_size("remove-dialog/header")
+                .map_or(problems::Room::DEFAULT.header, |[_, h]| h),
+        };
+        removal_view::dialog(flow, room, &kit, &mut overlays);
     }
     let window = col()
         .w_full()
@@ -220,7 +234,7 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
     rune_kit::root(window, overlays)
 }
 
-fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
+fn table(state: &Window, rows: &[&Routine], kit: &Kit, overlays: &mut Vec<El>) -> El {
     let headings =
         ["Routine", "State", "Trigger", "Latest activity"].map(|title| quiet(title, kit));
     let mut list = col().w_full();
@@ -256,15 +270,18 @@ fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
                     .selectable(true),
             )
             .child(ownership_badge(job.ownership, kit));
-        let mut line = columns([
-            name,
-            pill(job.state, kit),
-            text(job.trigger.clone())
-                .font(theme::body())
-                .color(kit.c.text_base)
-                .wrap(),
-            latest,
-        ])
+        let mut line = columns(
+            [
+                name,
+                pill(job.state, kit),
+                text(job.trigger.clone())
+                    .font(theme::body())
+                    .color(kit.c.text_base)
+                    .wrap(),
+                latest,
+            ],
+            routine_menu::button(state, job, kit, overlays),
+        )
         .min_h(55.0)
         .py(5.0)
         .key(job.key.clone());
@@ -277,6 +294,12 @@ fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
                 .press(kit.c.pressed)
                 .label(format!("{}, {}", job.name, summary.headline))
                 .on_press(move |window: &mut Window| window.show_problems(&key));
+        }
+        if job.removable.is_some() {
+            let key = job.key.clone();
+            line = line.on_secondary_press(move |window: &mut Window, at, _| {
+                window.menu_at(&key, at.x, at.y)
+            });
         }
         list = list.child(line).child(rule(kit));
     }
@@ -293,17 +316,18 @@ fn table(state: &Window, rows: &[&Routine], kit: &Kit) -> El {
         .w_full()
         .grow(1.0)
         .min_h(0.0)
-        .child(columns(headings).h(26.0))
+        .child(columns(headings, el().w(routine_menu::WIDTH)).h(26.0))
         .child(rule(kit))
         .child(kit.scroll_bar(viewport))
 }
 
-fn columns(cells: [El; 4]) -> El {
-    let mut line = row().w_full().center_y();
+/// Four columns sharing the width, then the row's actions.
+fn columns(cells: [El; 4], actions: El) -> El {
+    let mut shared = row().grow(1.0).min_w(0.0).center_y();
     for (cell, width) in cells.into_iter().zip([0.34, 0.16, 0.23, 0.27]) {
-        line = line.child(col().w_frac(width).pr(8.0).child(cell));
+        shared = shared.child(col().w_frac(width).pr(8.0).child(cell));
     }
-    line
+    row().w_full().center_y().child(shared).child(actions)
 }
 
 fn pill(state: Health, kit: &Kit) -> El {

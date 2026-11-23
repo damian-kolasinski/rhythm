@@ -1,6 +1,7 @@
 //! Create, adopt, release, and remove jobs so that every one records its runs
 //! and starts from the same predictable environment.
 use crate::{
+    invoked_script,
     jobs::{JobSpec, Label, Observation, Schedule, Supervisor},
     operation_error::{Error, Result},
     wrapper_command::Wrapped,
@@ -230,12 +231,31 @@ pub fn release(supervisor: &impl Supervisor, label: &Label, restart: bool) -> Re
     supervisor.set_program(label, &wrapped.program)
 }
 
-/// Unloads and deletes a job created by `add`; its recorded history stays.
-pub fn remove(supervisor: &impl Supervisor, label: &Label) -> Result<()> {
-    if !owned(supervisor, label)? {
-        return Err(Error::NotOwned);
-    }
-    supervisor.uninstall(label)
+/// What removing a job leaves behind.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Removal {
+    /// The script the job runs, which stays where it is.
+    pub script: Option<PathBuf>,
+}
+
+/// What removing the job would leave behind. Rhythm removes the jobs it
+/// records: those `add` created and those the operator adopted.
+pub fn removal(supervisor: &impl Supervisor, label: &Label) -> Result<Removal> {
+    let program = supervisor.program(label)?;
+    let wrapped = Wrapped::parse(&program.arguments)
+        .filter(|w| w.label == *label)
+        .ok_or(Error::NotRecorded)?;
+    Ok(Removal {
+        script: invoked_script::script(&wrapped.program, program.working_directory.as_deref()),
+    })
+}
+
+/// Unloads and deletes a job Rhythm records, stopping a run in progress; its
+/// recorded history and the script it ran stay.
+pub fn remove(supervisor: &impl Supervisor, label: &Label) -> Result<Removal> {
+    let removal = removal(supervisor, label)?;
+    supervisor.uninstall(label)?;
+    Ok(removal)
 }
 
 fn refuse_running(supervisor: &impl Supervisor, label: &Label, restart: bool) -> Result<()> {
