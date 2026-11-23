@@ -91,6 +91,18 @@ pub struct RunReport {
         deserialize_with = "lenient"
     )]
     pub findings: Option<RunFindings>,
+    /// Confirmed session launches linked to this run in the session store.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "lenient"
+    )]
+    pub session_spawns: Option<SessionSpawns>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionSpawns {
+    pub count: u32,
 }
 
 /// An optional value from another machine, absent when this version does not
@@ -354,6 +366,7 @@ mod tests {
                         "dropped": 3
                     }))
                     .unwrap(),
+                    session_spawns: Some(SessionSpawns { count: 2 }),
                 },
             },
         };
@@ -363,6 +376,7 @@ mod tests {
         assert_eq!(json["skipped"], true);
         assert_eq!(json["summary"], "nothing new");
         assert_eq!(json["result_error"], "unsupported_version");
+        assert_eq!(json["session_spawns"]["count"], 2);
         assert_eq!(serde_json::from_value::<Run>(json).unwrap(), run);
         // An older Rhythm sends none of them.
         let older: Run = serde_json::from_value(serde_json::json!({

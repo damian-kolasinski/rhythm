@@ -66,6 +66,15 @@ pub fn private_file(path: &Path) -> Result<File> {
     validate_file(&f)?;
     Ok(f)
 }
+pub fn read_private_file(path: &Path) -> Result<File> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .map_err(|_| Error::StorageUnavailable)?;
+    validate_file(&file)?;
+    Ok(file)
+}
 pub fn validate_file(f: &File) -> Result<()> {
     let m = f.metadata().map_err(|_| Error::StorageUnavailable)?;
     if !m.is_file() || m.uid() != unsafe { libc::getuid() } || m.mode() & 0o077 != 0 {

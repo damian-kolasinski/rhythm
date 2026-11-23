@@ -132,6 +132,12 @@ where
 
 /// What the run said about itself, after how it ended.
 fn describe(result: &mut String, report: &RunReport) {
+    if let Some(spawns) = report.session_spawns {
+        match spawns.count {
+            1 => result.push_str(", session spawned"),
+            count => write!(result, ", {count} sessions spawned").unwrap(),
+        }
+    }
     if let Some(error) = report.result_error {
         write!(result, ", result file {error}").unwrap();
     }

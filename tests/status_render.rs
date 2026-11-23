@@ -30,6 +30,7 @@ fn job(label: &str, activation: Option<Activation>, observation: Observation) ->
         verdict: None,
         open_findings: 0,
         run_store: None,
+        last_session_run: None,
     }
 }
 

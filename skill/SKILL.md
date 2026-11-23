@@ -88,6 +88,7 @@ Each reference below has the details: `rhythm skill show NAME`.
 - `status`: states, other machines, and the JSON contract.
 - `runs`: the recorder, history, output, and retention.
 - `results`: let a job report a skip, a one-line summary, and the problems it found.
+- `sessions`: configure a launcher, start an agent from a job, and report its outcome.
 - `authoring`: `add`, `adopt`, `remove`, and `kick` in detail.
 - `attention`: notifications and `attention --since-last-seen`.
 - `agents`: the skill and session hook `rhythm skill setup` installs.

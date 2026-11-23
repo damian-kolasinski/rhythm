@@ -37,6 +37,7 @@ pub mod run_result;
 pub mod runs;
 pub mod schedule_input;
 pub mod session_start;
+pub mod sessions;
 pub mod skill_guide;
 pub mod state_directory;
 pub mod status;

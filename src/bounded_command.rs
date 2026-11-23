@@ -15,14 +15,24 @@ pub struct Output {
 #[derive(Debug, PartialEq, Eq)]
 pub enum Failure {
     Unavailable,
+    WaitFailed,
     TimedOut,
     /// Either stream exceeded the limit; the program was stopped.
     TooLarge,
 }
 
 pub fn run(mut command: Command, timeout: Duration, limit: u64) -> Result<Output, Failure> {
+    command.stdin(Stdio::null());
+    run_prepared(command, timeout, limit)
+}
+
+/// Run with caller-provided input, using the same output and deadline limits.
+pub fn run_prepared(
+    mut command: Command,
+    timeout: Duration,
+    limit: u64,
+) -> Result<Output, Failure> {
     let mut child = command
-        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -44,7 +54,7 @@ pub fn run(mut command: Command, timeout: Duration, limit: u64) -> Result<Output
         if status.is_none() {
             status = child
                 .try_wait()
-                .map_err(|_| stop(&mut child, Failure::Unavailable))?;
+                .map_err(|_| stop(&mut child, Failure::WaitFailed))?;
         }
         if Instant::now() >= deadline {
             return Err(stop(&mut child, Failure::TimedOut));

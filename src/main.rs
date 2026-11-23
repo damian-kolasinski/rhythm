@@ -34,6 +34,7 @@ use std::{
     process::ExitCode,
     time::Duration,
 };
+mod session_cli;
 
 #[derive(Parser)]
 #[command(version, about)]
@@ -105,6 +106,11 @@ impl From<AgentArg> for Agent {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Configure, spawn, and report outcomes for agent sessions.
+    Session {
+        #[command(subcommand)]
+        command: session_cli::SessionCommand,
+    },
     /// Check and install a newer signed Rhythm release.
     Update {
         #[command(subcommand)]
@@ -300,6 +306,7 @@ fn main() -> ExitCode {
     };
     let json = cli.json;
     match cli.command {
+        Commands::Session { command } => session_cli::run(json, cli.data_dir, command),
         #[cfg(target_os = "macos")]
         Commands::Update { command } => {
             use rhythm::installation::{Paths, update, window::MacDesktop};
