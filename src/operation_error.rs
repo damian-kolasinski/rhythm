@@ -52,7 +52,7 @@ impl Error {
             Self::Busy => "The job is running now.",
             Self::RestartRequired => "The job is running. Pass --restart to stop and reload it.",
             Self::NotRecorded => "The job does not record its runs.",
-            Self::NotOwned => "Rhythm only removes jobs it created with `rhythm add`.",
+            Self::NotOwned => "Rhythm only replaces jobs it created with `rhythm add`.",
             Self::UnsupportedDefinition => {
                 "The job's definition uses a form Rhythm cannot change safely."
             }

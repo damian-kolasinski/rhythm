@@ -52,8 +52,10 @@ Rhythm created; `rhythm remove NAME` deletes one.
 
 `rhythm adopt LABEL` records an existing user LaunchAgent by wrapping its
 command. `unadopt` restores the command. A running job needs `--restart`,
-which stops the current run. Rhythm can replace or remove jobs it created.
-System launchd jobs and cron entries are read-only in the inventory.
+which stops the current run. Rhythm can replace jobs it created and remove
+jobs it created or adopted. Remove an adopted job only when the operator asks,
+and tell them the script `remove` reports, which stays on disk. System launchd
+jobs and cron entries are read-only in the inventory.
 
 ## When something failed
 

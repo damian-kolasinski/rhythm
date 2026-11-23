@@ -44,6 +44,10 @@ pub fn program(plist: &Dictionary) -> Option<Program> {
         arguments,
         has_log_files: plist.contains_key("StandardOutPath")
             || plist.contains_key("StandardErrorPath"),
+        working_directory: plist
+            .get("WorkingDirectory")
+            .and_then(Value::as_string)
+            .map(Into::into),
     })
 }
 

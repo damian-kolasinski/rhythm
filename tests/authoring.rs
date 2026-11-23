@@ -1,6 +1,6 @@
 #![cfg(unix)]
 use rhythm::{
-    authoring::{self, Added, Adoption, Caller, NewJob, Recorder},
+    authoring::{self, Added, Adoption, Caller, NewJob, Recorder, Removal},
     jobs::{Exit, Label, Schedule},
     kick,
     launchd::Launchd,
@@ -612,20 +612,71 @@ fn definitions_rhythm_cannot_change_safely_are_left_alone() {
 }
 
 #[test]
-fn removes_only_jobs_rhythm_created() {
+fn removes_only_jobs_rhythm_created_or_adopted() {
     let f = Fixture::new();
     f.add("report", on_demand(), &["/usr/bin/true"], false)
         .unwrap();
-    f.foreign("com.example.scan", "");
-    let scan = label("com.example.scan");
-    authoring::adopt(&f.launchd, &f.recorder(), &scan, false).unwrap();
-    assert_eq!(authoring::remove(&f.launchd, &scan), Err(Error::NotOwned));
-    assert!(f.agent("com.example.scan").exists());
-
     let report = authoring::resolve("report").unwrap();
-    authoring::remove(&f.launchd, &report).unwrap();
+    assert_eq!(
+        authoring::remove(&f.launchd, &report),
+        Ok(Removal { script: None })
+    );
     assert!(!f.agent("dev.rhythm.report").exists());
     assert_eq!(f.loaded("dev.rhythm.report"), None);
+
+    f.foreign("com.example.scan", "");
+    let scan = label("com.example.scan");
+    assert_eq!(
+        authoring::remove(&f.launchd, &scan),
+        Err(Error::NotRecorded)
+    );
+    assert!(f.agent("com.example.scan").exists());
+    assert!(f.loaded("com.example.scan").is_some());
+
+    authoring::adopt(&f.launchd, &f.recorder(), &scan, false).unwrap();
+    authoring::remove(&f.launchd, &scan).unwrap();
+    assert!(!f.agent("com.example.scan").exists());
+    assert_eq!(f.loaded("com.example.scan"), None);
+    assert_eq!(
+        authoring::remove(&f.launchd, &scan),
+        Err(Error::JobNotFound)
+    );
+}
+
+#[test]
+fn removal_names_the_script_the_job_ran_and_leaves_it() {
+    let f = Fixture::new();
+    let scripts = f.path().join("work/scripts");
+    fs::create_dir_all(&scripts).unwrap();
+    let script = scripts.join("backup.py");
+    fs::write(&script, "print('sample')\n").unwrap();
+    f.foreign(
+        "com.example.backup",
+        &format!(
+            "<key>WorkingDirectory</key><string>{}</string>",
+            f.path().join("work").display()
+        ),
+    );
+    let backup = label("com.example.backup");
+    let file = f.agent("com.example.backup");
+    let rewritten = fs::read_to_string(&file).unwrap().replace(
+        "<string>/bin/sh</string><string>-c</string><string>echo sample</string>",
+        "<string>/usr/bin/python3</string><string>scripts/backup.py</string>",
+    );
+    fs::write(&file, rewritten).unwrap();
+    authoring::adopt(&f.launchd, &f.recorder(), &backup, false).unwrap();
+
+    let expected = Removal {
+        script: Some(script.clone()),
+    };
+    assert_eq!(
+        authoring::removal(&f.launchd, &backup),
+        Ok(expected.clone())
+    );
+    assert!(file.exists(), "asking changes nothing");
+    assert_eq!(authoring::remove(&f.launchd, &backup), Ok(expected));
+    assert!(!file.exists());
+    assert!(script.exists(), "the script stays");
 }
 
 #[test]

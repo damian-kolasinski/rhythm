@@ -16,6 +16,7 @@ pub mod findings_render;
 pub mod history_render;
 #[cfg(target_os = "macos")]
 pub mod installation;
+pub mod invoked_script;
 pub mod jobs;
 pub mod kick;
 pub mod kick_render;

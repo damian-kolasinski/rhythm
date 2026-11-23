@@ -18,6 +18,11 @@ const SCENES: &[&str] = &[
     "problems",
     "problems-scroll",
     "problems-unreadable",
+    "actions",
+    "remove-script",
+    "remove-running",
+    "remove-failed",
+    "removed",
 ];
 
 #[test]
@@ -32,6 +37,89 @@ fn scenes_match_goldens() {
     compare(scratch.path(), "release-available", "dark", "630x330");
     compare(scratch.path(), "routines", "light", "630x330");
     compare(scratch.path(), "problems-scroll", "dark", "630x330");
+    compare(scratch.path(), "remove-failed", "dark", "630x330");
+}
+
+const ARCHIVE: &str = "UserAgent/0/dev.rhythm.archive-samples";
+const SCRIPT: &str = "/Users/example/scripts/archive-samples.sh";
+
+fn has_key(window: &str, key: &str) -> bool {
+    tree(window)["elements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|e| e["key"] == key)
+}
+
+#[test]
+fn removing_a_routine_warns_about_its_script_then_hides_the_row() {
+    let more = format!(r#"{{"t":0.3,"type":"tap","key":"{ARCHIVE}/more"}}"#);
+    let item = format!(r#"{{"t":0.6,"type":"tap","key":"{ARCHIVE}/actions-item0"}}"#);
+    let confirm = r#"{"t":1.0,"type":"tap","key":"remove-confirm"}"#;
+
+    let asked = script("routines", &[&more, &item], "0.9");
+    assert!(asked.contains("Remove Archive samples?"));
+    assert!(asked.contains("This routine runs a script"));
+    assert!(asked.contains(SCRIPT));
+    assert!(has_key(&asked, "reveal-script"));
+
+    let removing = script("routines", &[&more, &item, confirm], "1.3");
+    assert!(removing.contains("Removing…"));
+    assert!(
+        has_key(&removing, ARCHIVE),
+        "the row stays until it is gone"
+    );
+
+    let removed = script("routines", &[&more, &item, confirm], "2.4");
+    assert!(!has_key(&removed, ARCHIVE));
+    assert!(!removed.contains("Remove Archive samples?"));
+    assert!(removed.contains("Removed Archive samples"));
+    assert!(removed.contains(SCRIPT));
+    assert!(has_key(&removed, "removed-reveal"));
+    assert!(removed.contains("3 on this Mac"));
+
+    let dismiss = r#"{"t":2.5,"type":"tap","key":"removed-dismiss"}"#;
+    let dismissed = script("routines", &[&more, &item, confirm, dismiss], "2.9");
+    assert!(!dismissed.contains("Removed Archive samples"));
+}
+
+#[test]
+fn cancelling_keeps_the_routine() {
+    let open = format!(r#"{{"t":0.3,"type":"tap","button":"secondary","key":"{ARCHIVE}"}}"#);
+    let item = format!(r#"{{"t":0.6,"type":"tap","key":"{ARCHIVE}/actions-item0"}}"#);
+    for close in [
+        r#"{"t":1.0,"type":"tap","key":"remove-cancel"}"#,
+        r#"{"t":1.0,"type":"key","name":"Escape"}"#,
+    ] {
+        let window = script("routines", &[&open, &item, close], "1.6");
+        assert!(!window.contains("Remove Archive samples?"));
+        assert!(has_key(&window, ARCHIVE));
+        assert!(!window.contains("Removed Archive samples"));
+    }
+}
+
+#[test]
+fn only_routines_rhythm_records_offer_removal() {
+    let window = script("routines", &[], "0.5");
+    assert!(has_key(&window, &format!("{ARCHIVE}/more")));
+    assert!(has_key(
+        &window,
+        "UserAgent/0/com.example.index-samples/more"
+    ));
+    assert!(!has_key(&window, "Daemon/0/com.example.sync-catalog/more"));
+
+    let external =
+        r#"{"t":0.3,"type":"tap","button":"secondary","key":"Daemon/0/com.example.sync-catalog"}"#;
+    assert!(!script("routines", &[external], "0.8").contains("Remove…"));
+    let recorded = format!(r#"{{"t":0.3,"type":"tap","button":"secondary","key":"{ARCHIVE}"}}"#);
+    assert!(script("routines", &[&recorded], "0.8").contains("Remove…"));
+}
+
+#[test]
+fn removing_a_running_routine_says_it_stops_the_run() {
+    let window = script("remove-running", &[], "0.5");
+    assert!(window.contains("It is running now; removing it stops that run."));
+    assert!(!window.contains("This routine runs a script"));
 }
 
 const FLAGGED: &str = "UserAgent/0/dev.rhythm.check-links";

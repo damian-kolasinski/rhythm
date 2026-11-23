@@ -78,6 +78,8 @@ pub struct Program {
     pub arguments: Vec<String>,
     /// The definition routes output to its own log files.
     pub has_log_files: bool,
+    /// Where the command starts; launchd's default is `/`.
+    pub working_directory: Option<PathBuf>,
 }
 
 /// The platform service that starts and restarts the operator's jobs.

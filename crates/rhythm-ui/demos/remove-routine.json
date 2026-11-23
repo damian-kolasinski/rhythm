@@ -1,0 +1,13 @@
+[
+  {"t":0.6,"type":"move","key":"UserAgent/0/dev.rhythm.archive-samples"},
+  {"t":1.2,"type":"move","key":"UserAgent/0/dev.rhythm.archive-samples/more"},
+  {"t":1.5,"type":"tap","key":"UserAgent/0/dev.rhythm.archive-samples/more"},
+  {"t":2.3,"type":"move","key":"UserAgent/0/dev.rhythm.archive-samples/actions-item0"},
+  {"t":2.6,"type":"tap","key":"UserAgent/0/dev.rhythm.archive-samples/actions-item0"},
+  {"t":3.6,"type":"move","key":"script-path"},
+  {"t":4.8,"type":"move","key":"reveal-script"},
+  {"t":6.0,"type":"move","key":"remove-confirm"},
+  {"t":6.4,"type":"tap","key":"remove-confirm"},
+  {"t":8.2,"type":"move","key":"removed-reveal"},
+  {"t":10.2,"type":"mark","name":"end"}
+]

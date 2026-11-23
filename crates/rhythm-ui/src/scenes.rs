@@ -1,13 +1,22 @@
 //! Deterministic scenarios for snapshots and the demonstration.
 use rhythm::{
+    authoring::Removal,
     findings::{Finding, FindingKey, OpenSet, Problem, Said, Stated},
     jobs::{Activation, Calendar, Exit, Health, Observation, Trigger},
+    operation_error::Error,
     routines::{CronEntry, CronTable, LaunchdSource, Routine, Snapshot, Source},
     runs::{Outcome, ResultError, Run, RunReport, RunState, Timestamp},
     status::JobReport,
 };
 
-use crate::{app::Window, routine::Inventory, updates::Offer};
+use crate::{
+    app::Window,
+    finder,
+    removal::{Removed, Stage},
+    routine::Inventory,
+    routine_control::Sample,
+    updates::Offer,
+};
 
 type Scene = (&'static str, fn(&mut Window));
 
@@ -26,6 +35,11 @@ pub const SCENES: &[Scene] = &[
     ("problems", problems),
     ("problems-scroll", problems_scroll),
     ("problems-unreadable", problems_unreadable),
+    ("actions", actions),
+    ("remove-script", remove_script),
+    ("remove-running", remove_running),
+    ("remove-failed", remove_failed),
+    ("removed", removed),
 ];
 
 const NOW: Timestamp = Timestamp(2_000_000_000_000);
@@ -202,6 +216,50 @@ fn problems_unreadable(window: &mut Window) {
 }
 
 const FLAGGED: &str = "UserAgent/0/dev.rhythm.check-links";
+const ARCHIVE: &str = "UserAgent/0/dev.rhythm.archive-samples";
+const ARCHIVE_SCRIPT: &str = "/Users/example/scripts/archive-samples.sh";
+
+/// The actions menu of a routine Rhythm created.
+fn actions(window: &mut Window) {
+    routines(window);
+    window.toggle_menu(ARCHIVE);
+}
+
+/// Removing a routine that runs a script.
+fn remove_script(window: &mut Window) {
+    routines(window);
+    window.ask_remove(ARCHIVE);
+}
+
+/// Removing an adopted routine while it runs; it runs no script.
+fn remove_running(window: &mut Window) {
+    routines(window);
+    window.ask_remove("UserAgent/0/com.example.index-samples");
+}
+
+fn remove_failed(window: &mut Window) {
+    remove_script(window);
+    let flow = window.removal.as_mut().unwrap();
+    let Stage::Ready(removal) = &flow.stage else {
+        panic!("a sample removal is read at once")
+    };
+    flow.stage = Stage::Failed(removal.clone(), Error::SupervisorUnavailable);
+}
+
+/// The notice once a routine that ran a script is gone.
+fn removed(window: &mut Window) {
+    routines(window);
+    window
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .rows
+        .retain(|row| row.key != ARCHIVE);
+    window.removed = Some(Removed {
+        name: "Archive samples".into(),
+        script: Some(ARCHIVE_SCRIPT.into()),
+    });
+}
 
 fn two_problems() -> Vec<Finding> {
     let mut setup = finding(
@@ -331,9 +389,23 @@ impl Job {
     }
 }
 
-/// The everyday routines, changed by `change`, then a crontab entry.
+/// The everyday routines, changed by `change`, then a crontab entry. The
+/// recorded ones can be removed; two run scripts.
 fn show(window: &mut Window, change: impl FnOnce(&mut Vec<Job>)) {
     empty(window);
+    let none = || Ok(Removal { script: None });
+    window.control = std::sync::Arc::new(Sample::new([
+        ("dev.rhythm.archive-samples", Sample::script(ARCHIVE_SCRIPT)),
+        ("com.example.index-samples", none()),
+        (
+            "dev.rhythm.check-links",
+            Sample::script("/Users/example/sites/check-links.py"),
+        ),
+        ("dev.rhythm.poll-feed", none()),
+        ("dev.rhythm.watch-inbox", none()),
+        ("dev.rhythm.sync-notes", none()),
+    ]));
+    window.finder = Box::new(finder::Sample::default());
     let mut jobs = vec![
         Job {
             source: LaunchdSource::Daemon,
@@ -383,4 +455,23 @@ fn show(window: &mut Window, change: impl FnOnce(&mut Vec<Job>)) {
         }
         .into(),
     );
+}
+
+/// Two recorded definitions in LaunchAgents that declare the same label.
+#[cfg(test)]
+pub fn push_shared_label(snapshot: &mut Snapshot) {
+    for instance in 0..2 {
+        let mut routine = Job::new(
+            "dev.rhythm.shared",
+            Health::Ok,
+            Trigger::Interval { seconds: 60 },
+            Some(0),
+            60_000,
+        )
+        .routine(instance as i64);
+        if let Routine::Launchd { instance: n, .. } = &mut routine {
+            *n = instance;
+        }
+        snapshot.routines.push(routine);
+    }
 }

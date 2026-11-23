@@ -2,14 +2,14 @@ use rhythm::{
     authoring::OWNED_PREFIX,
     findings::{Finding, Stated},
     findings_render,
-    jobs::{Activation, Exit, Health, Observation, Trigger},
+    jobs::{Activation, Exit, Health, Label, Observation, Trigger},
     routines::{CronEntry, CronTable, Ownership, Routine as DeviceRoutine, Snapshot, Source},
     runs::{Outcome, Run, RunState, Timestamp},
     status::JobReport,
     terminal_text::clean,
     time_text,
 };
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub struct Inventory {
@@ -19,8 +19,25 @@ pub struct Inventory {
 
 impl From<Snapshot> for Inventory {
     fn from(snapshot: Snapshot) -> Self {
+        // Removal names a job by its label, which must say which routine.
+        let mut labels = BTreeMap::<String, usize>::new();
+        for routine in &snapshot.routines {
+            if let DeviceRoutine::Launchd { report, .. } = routine {
+                *labels.entry(report.label.clone()).or_default() += 1;
+            }
+        }
+        let mut rows: Vec<Routine> = snapshot.routines.into_iter().map(Routine::from).collect();
+        for row in &mut rows {
+            if row
+                .removable
+                .as_ref()
+                .is_some_and(|label| labels.get(label.as_str()) != Some(&1))
+            {
+                row.removable = None;
+            }
+        }
         Self {
-            rows: snapshot.routines.into_iter().map(Routine::from).collect(),
+            rows,
             incomplete: snapshot.incomplete,
         }
     }
@@ -67,6 +84,9 @@ pub struct Routine {
     pub problems: Vec<Finding>,
     /// Problems the routine listed beyond the first 100, which are not kept.
     pub unlisted: u32,
+    /// The launchd label of a routine Rhythm created or adopted, which the
+    /// window can remove; `None` for every other routine.
+    pub removable: Option<Label>,
 }
 
 pub enum Activity {
@@ -112,6 +132,9 @@ impl Routine {
         timers: Vec<Trigger>,
         stated: Option<Stated>,
     ) -> Self {
+        let removable = (ownership != Ownership::External)
+            .then(|| job.label.parse().ok())
+            .flatten();
         let label = clean(&job.label);
         let short = label
             .strip_prefix(OWNED_PREFIX)
@@ -172,6 +195,7 @@ impl Routine {
             activity,
             problems,
             unlisted,
+            removable,
         }
     }
 
@@ -219,6 +243,7 @@ impl Routine {
             activity: Activity::Unavailable,
             problems: Vec::new(),
             unlisted: 0,
+            removable: None,
         }
     }
 }
@@ -370,6 +395,7 @@ mod tests {
             activity,
             problems: (0..problems).map(problem).collect(),
             unlisted: 0,
+            removable: None,
         };
         let Latest { headline, detail } = routine.latest(NOW);
         (headline, detail.map(|d| d.replace('\u{a0}', " ")))

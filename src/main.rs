@@ -24,6 +24,7 @@ use rhythm::{
     status::{self, HostOutcome},
     status_render,
     targets::{self, Target},
+    terminal_text,
 };
 use serde::Serialize;
 use std::{
@@ -193,7 +194,7 @@ enum Commands {
         #[arg(long)]
         restart: bool,
     },
-    /// Unload and delete a job created by `rhythm add`; its history is kept.
+    /// Unload and delete a job Rhythm created or adopted; its history and scripts are kept.
     Remove { job: String },
     /// Start a job now.
     Kick {
@@ -532,14 +533,25 @@ fn main() -> ExitCode {
         }
         Commands::Remove { job } => {
             let result = authoring::resolve(&job).and_then(|label| {
-                authoring::remove(&Launchd::current_user()?, &label)?;
-                Ok(serde_json::json!({"type": "removed", "label": label.as_str()}))
+                let removal = authoring::remove(&Launchd::current_user()?, &label)?;
+                Ok(serde_json::json!({
+                    "type": "removed",
+                    "label": label.as_str(),
+                    "script": removal.script.as_deref().and_then(std::path::Path::to_str),
+                }))
             });
             respond(json, result, |removed| {
-                format!(
+                let mut text = format!(
                     "Removed {}; its history is kept.\n",
                     removed["label"].as_str().unwrap_or_default()
-                )
+                );
+                if let Some(script) = removed["script"].as_str() {
+                    text.push_str(&format!(
+                        "The script it ran is still at {}.\n",
+                        terminal_text::clean(script)
+                    ));
+                }
+                text
             })
         }
         Commands::Kick { job, wait, timeout } => {

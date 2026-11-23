@@ -86,9 +86,13 @@ name), because it cannot change those safely.
 
 ## Remove
 
-`rhythm remove NAME` unloads and deletes a job created by `add`. Recorded
-history stays until it is pruned. Jobs written by other tools are never removed;
-`unadopt` them instead.
+`rhythm remove NAME` unloads and deletes a job Rhythm records: one created by
+`add` or one you adopted. A run in progress stops. Recorded history stays until
+it is pruned. When the job ran a script (a program starting with `#!`, or a
+file given to an interpreter such as `python3` or `sh`), the script stays where
+it is and `remove` names it; `--json` returns it as `script`. Jobs Rhythm
+doesn't record are never removed. The Rhythm window removes routines the same
+way; see [the macOS window](../crates/rhythm-ui/README.md).
 
 ## Kick
 
@@ -120,5 +124,5 @@ exits 1 when the run failed. If the wait times out, the run continues.
 ```
 
 `add`, `adopt`, `unadopt`, and `remove` return `{"type":"added"|"adopted"|
-"unadopted"|"removed","label":…}`; `adopted` includes `changed`, and `added`
-includes `replaced`.
+"unadopted"|"removed","label":…}`; `adopted` includes `changed`, `added`
+includes `replaced`, and `removed` includes `script`, a path or `null`.
