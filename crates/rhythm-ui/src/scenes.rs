@@ -47,6 +47,9 @@ const NOW: Timestamp = Timestamp(2_000_000_000_000);
 fn loading(window: &mut Window) {
     window.sample = true;
     window.now = NOW;
+    window
+        .updates
+        .set_sample_version(semver::Version::new(0, 3, 0));
 }
 
 fn empty(window: &mut Window) {

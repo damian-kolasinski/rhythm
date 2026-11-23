@@ -5,7 +5,7 @@ default-members = ["."]
 
 [package]
 name = "rhythm"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.99"
 description = "Find, record, and surface the background jobs agents leave on a machine"
