@@ -2803,7 +2803,7 @@ dependencies = [
 
 [[package]]
 name = "rhythm"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "chrono",
  "clap",
@@ -2821,7 +2821,7 @@ dependencies = [
 
 [[package]]
 name = "rhythm-ui"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "png 0.18.1",
  "rhythm",
