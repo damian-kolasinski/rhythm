@@ -213,6 +213,10 @@ impl Updates {
             .is_some_and(|offer| offer.version() == &job.version)
     }
 
+    pub fn set_sample_version(&mut self, version: Version) {
+        self.sample_version = Some(version);
+    }
+
     pub fn displayed_version(&self) -> String {
         self.sample_version
             .as_ref()
