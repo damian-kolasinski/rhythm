@@ -28,19 +28,27 @@ case "$1" in
     ;;
   install)
     test ! -e "$HOME/reject-release"
-    mkdir -p "$MISE_DATA_DIR/verified"
+    test "$PWD" = "$(dirname "$MISE_CONFIG_FILE")"
+    test "$MISE_CEILING_PATHS" = "$(dirname "$PWD")"
+    mkdir -p "$MISE_DATA_DIR/verified/.mise-bins"
     cp "$HOME/rhythm-fixture" "$MISE_DATA_DIR/verified/rhythm"
     cp "$HOME/window-fixture" "$MISE_DATA_DIR/verified/rhythm-ui"
     cp "$HOME/icon-fixture" "$MISE_DATA_DIR/verified/Rhythm.icns"
     touch "$MISE_DATA_DIR/verified/.mise-packslip.json"
+    ln -s ../rhythm "$MISE_DATA_DIR/verified/.mise-bins/rhythm"
     ;;
-  which) printf '%s\n' "$MISE_DATA_DIR/verified/rhythm" ;;
+  which) printf '%s\n' "$MISE_DATA_DIR/verified/.mise-bins/rhythm" ;;
   ls)
     printf '[{"version":"0.3.0","source":{"path":"%s/mise-test.toml"}}]\n' "$HOME"
     ;;
   where)
-    test -e "$HOME/linked-release"
-    printf '%s\n' "$HOME/linked-release"
+    test "$2" = 'packslip:github.com/example/rhythm@0.3.1'
+    if [ "$PWD" != "$HOME" ]; then
+      printf '%s\n' "$MISE_DATA_DIR/verified"
+    else
+      test -e "$HOME/linked-release"
+      printf '%s\n' "$HOME/linked-release"
+    fi
     ;;
   link)
     ln -s "$3" "$HOME/linked-release"
