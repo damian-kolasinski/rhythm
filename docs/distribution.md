@@ -131,16 +131,16 @@ boundaries and publishing every asset in one command follow Mergegate’s workfl
 
 To release, first merge the distribution workflow and the intended Cargo version
 through review. Fetch the reviewed target, inspect the commit, then create the
-version tag through GitHub. For version 0.4.0:
+version tag through GitHub. For version 0.4.1:
 
 ```sh
 git fetch mergegate
 repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 commit=$(git rev-parse mergegate/main)
-# Confirm this reviewed commit's Cargo version is 0.4.0 before tagging.
+# Confirm this reviewed commit's Cargo version is 0.4.1 before tagging.
 git show "$commit:Cargo.toml"
 gh api "repos/$repository/git/refs" --method POST \
-  -f ref=refs/tags/v0.4.0 -f sha="$commit"
+  -f ref=refs/tags/v0.4.1 -f sha="$commit"
 ```
 
 A tag is the explicit release action; it never advances a branch. Do not move or
@@ -165,7 +165,7 @@ mise selection or the normal Rhythm state directory:
 repository=$(gh repo view --json nameWithOwner --jq .nameWithOwner)
 commit=$(git rev-parse HEAD)
 mise exec -- python distribution/install.py \
-  --repository "$repository" --version 0.4.0 --commit "$commit"
+  --repository "$repository" --version 0.4.1 --commit "$commit"
 ```
 
 Run this at the release commit, or supply that commit explicitly. The expected
