@@ -18,6 +18,8 @@ const SCENES: &[&str] = &[
     "problems",
     "problems-scroll",
     "problems-unreadable",
+    "sessions",
+    "session-details",
     "actions",
     "remove-script",
     "remove-running",
@@ -38,6 +40,39 @@ fn scenes_match_goldens() {
     compare(scratch.path(), "routines", "light", "630x330");
     compare(scratch.path(), "problems-scroll", "dark", "630x330");
     compare(scratch.path(), "remove-failed", "dark", "630x330");
+    compare(scratch.path(), "session-details", "dark", "630x330");
+}
+
+#[test]
+fn opening_spawned_sessions_shows_outcomes_and_switches_to_a_waiting_session() {
+    let open =
+        r#"{"t":0.3,"type":"tap","key":"UserAgent/0/dev.rhythm.review-samples/session-activity"}"#;
+    let next = r#"{"t":0.7,"type":"tap","key":"session-tab-1"}"#;
+    let escape = r#"{"t":1.1,"type":"key","name":"Escape"}"#;
+    let reported = script("sessions", &[open], "0.6");
+    assert!(reported.contains("Fixed the upload retry"));
+    assert!(reported.contains("Open PR #42"));
+    assert!(reported.contains("Open thread"));
+    let waiting = script("sessions", &[open, next], "1.3");
+    assert!(waiting.contains("Waiting for input"));
+    assert!(waiting.contains("Copy attach command"));
+    assert!(!has_key(&waiting, "session-pr-0"));
+    let closed = script("sessions", &[open, next, escape], "1.7");
+    assert!(!has_key(&closed, "sessions-dialog"));
+    assert!(closed.contains("2 sessions spawned"));
+}
+
+#[test]
+fn newer_checks_and_runs_leave_the_session_link_available() {
+    let check = script("sessions", &[], "0.5");
+    assert!(check.contains("checked 8s ago"));
+    assert!(check.contains("2 sessions spawned"));
+    let newer = script("sessions-later-run", &[], "0.5");
+    assert!(newer.contains("Succeeded"));
+    assert!(newer.contains("2 sessions spawned"));
+    let open =
+        r#"{"t":0.3,"type":"tap","key":"UserAgent/0/dev.rhythm.review-samples/session-activity"}"#;
+    assert!(script("sessions-later-run", &[open], "0.9").contains("Open PR #42"));
 }
 
 const ARCHIVE: &str = "UserAgent/0/dev.rhythm.archive-samples";
@@ -271,7 +306,11 @@ fn script(scene: &str, events: &[&str], end: &str) -> String {
         .arg(&tree)
         .output()
         .unwrap();
-    assert!(result.status.success());
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
     fs::read_to_string(tree).unwrap()
 }
 

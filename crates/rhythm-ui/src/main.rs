@@ -17,6 +17,8 @@ mod routine_menu;
 #[cfg(target_os = "macos")]
 mod scenes;
 #[cfg(target_os = "macos")]
+mod session_dialog;
+#[cfg(target_os = "macos")]
 mod theme;
 #[cfg(target_os = "macos")]
 mod updates;

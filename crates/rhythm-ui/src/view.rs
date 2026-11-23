@@ -10,7 +10,7 @@ use crate::{
     app::Window,
     problems, removal_view,
     routine::{Filter, Routine},
-    routine_menu, theme,
+    routine_menu, session_dialog, theme,
 };
 
 pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
@@ -212,6 +212,17 @@ pub fn window(state: &Window, cx: &mut Cx<Window>) -> El {
         };
         removal_view::dialog(flow, room, &kit, &mut overlays);
     }
+    if let Some(session) = &state.sessions.open {
+        let room = problems::Room {
+            window: cx
+                .layout_size("kit-root")
+                .map_or(problems::Room::DEFAULT.window, |[_, h]| h),
+            header: cx
+                .layout_size("sessions-dialog/header")
+                .map_or(problems::Room::DEFAULT.header, |[_, h]| h),
+        };
+        session_dialog::dialog(session, state.now, room, &kit, &mut overlays);
+    }
     let window = col()
         .w_full()
         .h_full()
@@ -245,14 +256,33 @@ fn table(state: &Window, rows: &[&Routine], kit: &Kit, overlays: &mut Vec<El>) -
         } else {
             kit.c.warning.fg
         };
-        let mut latest = col().child(
-            text(summary.headline.clone())
-                .font(theme::body())
-                .color(headline)
-                .wrap(),
-        );
-        if let Some(detail) = summary.detail {
-            latest = latest.child(quiet(detail, kit).wrap());
+        let mut latest = col();
+        let replaces_latest =
+            job.session_is_latest() && job.problems.is_empty() && !job.state.broken();
+        if !replaces_latest {
+            latest = latest.child(
+                text(summary.headline.clone())
+                    .font(theme::body())
+                    .color(headline)
+                    .wrap(),
+            );
+            if let Some(detail) = summary.detail {
+                latest = latest.child(quiet(detail, kit).wrap());
+            }
+        }
+        if let Some(run) = job.session_run {
+            let time = time_text::ago(run.started_at, state.now);
+            let time = match &job.activity {
+                crate::routine::Activity::Recorded {
+                    checked: Some(at), ..
+                } if replaces_latest => {
+                    format!("{time} · checked {}", time_text::ago(*at, state.now))
+                }
+                _ => time,
+            };
+            latest = latest
+                .child(session_dialog::activity_button(&job.key, run.count, kit))
+                .child(quiet(time, kit).wrap());
         }
         let name = col()
             .gap(1.0)

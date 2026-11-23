@@ -20,7 +20,7 @@ use crate::{
     removal::{Flow, Next, Removed, Reply},
     routine::{Filter, Inventory, Routine},
     routine_control::{self, RoutineControl},
-    routine_menu, scenes, theme,
+    routine_menu, scenes, session_dialog, theme,
     updates::Updates,
     view,
 };
@@ -38,6 +38,7 @@ pub struct Window {
     pub updates: Updates,
     /// The key of the routine whose problems the dialog shows.
     pub problems: Option<String>,
+    pub sessions: session_dialog::SessionDialog,
     /// The routine whose actions menu is open.
     pub menu: Option<routine_menu::Open>,
     /// The routine the removal dialog is about.
@@ -93,6 +94,7 @@ impl Window {
             sample: false,
             updates: Updates::default(),
             problems: None,
+            sessions: session_dialog::SessionDialog::default(),
             menu: None,
             removal: None,
             removed: None,
@@ -131,6 +133,20 @@ impl Window {
 
     pub fn close_problems(&mut self) {
         self.problems = None;
+    }
+
+    pub fn show_sessions(&mut self, key: &str) {
+        let Some(routine) = self.routine(key) else {
+            return;
+        };
+        let Some(run) = routine.session_run else {
+            return;
+        };
+        let name = routine.name.clone();
+        let store = routine.run_store.clone();
+        self.problems = None;
+        self.sessions
+            .open(run.id, run.count, run.started_at, name, store);
     }
 
     /// The routine the problems dialog shows, while it has problems open.
@@ -292,6 +308,7 @@ fn setup(state: &mut Window, wake: Waker) {
         state.updates.start(paths, build, wake.clone());
     }
     state.replies.set_waker(wake.clone());
+    state.sessions.set_waker(wake.clone());
     state.reports.set_waker(wake);
     let reports = Arc::clone(&state.reports);
     let (refresh, requests) = mpsc::sync_channel(1);
@@ -313,6 +330,7 @@ fn setup(state: &mut Window, wake: Waker) {
 
 fn poll(state: &mut Window, clock: f64, tx: &mut Tx) -> bool {
     let mut changed = state.updates.poll(clock, tx);
+    changed |= state.sessions.poll(clock, tx);
     if let Some(reply) = state.replies.take() {
         state.receive(reply);
         changed = true;
