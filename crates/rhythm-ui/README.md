@@ -13,6 +13,10 @@ shows its problem count. Clicking it opens a dialog listing those problems as
 problems are resolved. When skipped runs followed the newest real run, the
 latest activity adds when the routine last checked.
 
+When a run starts an agent session, its latest activity links to the sessions
+from that run. The dialog updates while open and shows the outcome, any pull
+requests, and how to open the thread or attach to the session.
+
 Each routine Rhythm created or adopted has a "⋯" button, and a secondary
 click on its row opens the same menu. **Remove…** opens a confirmation that
 says what stays: the routine's recorded runs and, when it runs a script (a

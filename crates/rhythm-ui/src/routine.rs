@@ -2,9 +2,10 @@ use rhythm::{
     authoring::OWNED_PREFIX,
     findings::{Finding, Stated},
     findings_render,
-    jobs::{Activation, Exit, Health, Label, Observation, Trigger},
+    jobs::{Activation, Exit, Health, Label, Observation, RunStore, Trigger},
     routines::{CronEntry, CronTable, Ownership, Routine as DeviceRoutine, Snapshot, Source},
     runs::{Outcome, Run, RunState, Timestamp},
+    sessions::SessionRun,
     status::JobReport,
     terminal_text::clean,
     time_text,
@@ -87,6 +88,8 @@ pub struct Routine {
     /// The launchd label of a routine Rhythm created or adopted, which the
     /// window can remove; `None` for every other routine.
     pub removable: Option<Label>,
+    pub run_store: Option<RunStore>,
+    pub session_run: Option<SessionRun>,
 }
 
 pub enum Activity {
@@ -196,7 +199,15 @@ impl Routine {
             problems,
             unlisted,
             removable,
+            run_store: job.run_store,
+            session_run: job.last_session_run,
         }
+    }
+
+    pub fn session_is_latest(&self) -> bool {
+        matches!((&self.activity, self.session_run),
+            (Activity::Recorded { run, .. }, Some(sessions))
+            if run.id == sessions.id && matches!(run.state, RunState::Finished { .. }))
     }
 
     /// What the Latest activity cell says: the open problems when there are
@@ -244,6 +255,8 @@ impl Routine {
             problems: Vec::new(),
             unlisted: 0,
             removable: None,
+            run_store: None,
+            session_run: None,
         }
     }
 }
@@ -396,6 +409,8 @@ mod tests {
             problems: (0..problems).map(problem).collect(),
             unlisted: 0,
             removable: None,
+            run_store: None,
+            session_run: None,
         };
         let Latest { headline, detail } = routine.latest(NOW);
         (headline, detail.map(|d| d.replace('\u{a0}', " ")))

@@ -5,7 +5,8 @@ use rhythm::{
     jobs::{Activation, Calendar, Exit, Health, Observation, Trigger},
     operation_error::Error,
     routines::{CronEntry, CronTable, LaunchdSource, Routine, Snapshot, Source},
-    runs::{Outcome, ResultError, Run, RunReport, RunState, Timestamp},
+    runs::{Outcome, ResultError, Run, RunReport, RunState, SessionSpawns, Timestamp},
+    sessions::{self, Backend, Details, Launch, OutcomeKind, Session, SessionRun},
     status::JobReport,
 };
 
@@ -35,6 +36,9 @@ pub const SCENES: &[Scene] = &[
     ("problems", problems),
     ("problems-scroll", problems_scroll),
     ("problems-unreadable", problems_unreadable),
+    ("sessions", sessions_overview),
+    ("sessions-later-run", sessions_later_run),
+    ("session-details", session_details),
     ("actions", actions),
     ("remove-script", remove_script),
     ("remove-running", remove_running),
@@ -157,6 +161,85 @@ fn skipped(window: &mut Window) {
 fn problems(window: &mut Window) {
     flagged(window);
     window.problems = Some(FLAGGED.into());
+}
+
+const SESSION_ROUTINE: &str = "UserAgent/0/dev.rhythm.review-samples";
+
+fn sessions_overview(window: &mut Window) {
+    show(window, |jobs| {
+        jobs.insert(
+            0,
+            Job {
+                spawned: 2,
+                skipped: Some(8_000),
+                ..Job::new(
+                    "dev.rhythm.review-samples",
+                    Health::Ok,
+                    Trigger::Interval { seconds: 900 },
+                    Some(0),
+                    60_000,
+                )
+            },
+        );
+    });
+    let completed = Details {
+        activity: sessions::Activity::Idle,
+        session: Session {
+            id: "a0000000000000000000000000000001".parse().unwrap(),
+            title: "Repair sample upload".into(),
+            backend: Backend::T3,
+            created_at: Timestamp(NOW.0 - 60_000),
+            run_id: Some(1),
+            launch: Some(Launch {
+                provider_id: "sample-thread".into(),
+                link: Some("https://example.com/threads/sample".into()),
+                branch: None,
+            }),
+            outcome: Some(sessions::Outcome {
+                kind: OutcomeKind::Done,
+                summary: "Fixed the upload retry and verified the affected tests.".into(),
+                pull_requests: vec!["https://example.com/owner/project/pull/42".into()],
+                reported_at: Timestamp(NOW.0 - 30_000),
+            }),
+        },
+    };
+    let waiting = Details {
+        activity: sessions::Activity::Waiting,
+        session: Session {
+            id: "a0000000000000000000000000000002".parse().unwrap(),
+            title: "Review sample queue".into(),
+            backend: Backend::Claude,
+            created_at: Timestamp(NOW.0 - 59_000),
+            run_id: Some(1),
+            launch: Some(Launch {
+                provider_id: "0123abcd".into(),
+                link: None,
+                branch: None,
+            }),
+            outcome: None,
+        },
+    };
+    window.sessions.sample(vec![completed, waiting]);
+}
+
+fn session_details(window: &mut Window) {
+    sessions_overview(window);
+    window.show_sessions(SESSION_ROUTINE);
+}
+
+fn sessions_later_run(window: &mut Window) {
+    sessions_overview(window);
+    let row = window
+        .snapshot
+        .as_mut()
+        .unwrap()
+        .rows
+        .iter_mut()
+        .find(|row| row.key == SESSION_ROUTINE)
+        .unwrap();
+    if let crate::routine::Activity::Recorded { run, .. } = &mut row.activity {
+        run.id += 1;
+    }
 }
 
 fn problems_scroll(window: &mut Window) {
@@ -314,6 +397,7 @@ struct Job {
     /// How long ago the newest skipped run after it ended.
     skipped: Option<i64>,
     findings: Vec<Finding>,
+    spawned: u32,
 }
 
 impl Job {
@@ -334,6 +418,7 @@ impl Job {
             took: if exit.is_some() { 12_000 } else { 0 },
             skipped: None,
             findings: Vec::new(),
+            spawned: 0,
         }
     }
 
@@ -349,6 +434,9 @@ impl Job {
                     outcome: Outcome::Code { code },
                     report: RunReport {
                         skipped,
+                        session_spawns: (!skipped && self.spawned > 0).then_some(SessionSpawns {
+                            count: self.spawned,
+                        }),
                         ..RunReport::default()
                     },
                 }),
@@ -371,6 +459,11 @@ impl Job {
             verdict: None,
             open_findings: self.findings.len(),
             run_store: None,
+            last_session_run: (self.spawned > 0).then_some(SessionRun {
+                id,
+                count: self.spawned,
+                started_at: Timestamp(NOW.0 - self.ended - self.took),
+            }),
         };
         let stated = (!self.findings.is_empty()).then(|| Stated {
             run: id,
