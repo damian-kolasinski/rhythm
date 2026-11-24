@@ -42,6 +42,9 @@ pub struct JobReport {
     /// Where a local recorded job's runs are kept; never sent to other machines.
     #[serde(skip)]
     pub run_store: Option<RunStore>,
+    /// The latest run with sessions, even after newer runs finished or its logs expired.
+    #[serde(skip)]
+    pub last_session_run: Option<crate::sessions::SessionRun>,
 }
 impl JobReport {
     fn new(job: Job, runs: RecentRuns) -> Self {
@@ -59,6 +62,7 @@ impl JobReport {
             observation: job.observation,
             recorded: job.recorded.is_some(),
             run_store: job.recorded,
+            last_session_run: None,
             last_run: runs.last_run,
             last_skip: runs.last_skip,
             verdict: runs.verdict,
@@ -181,20 +185,33 @@ impl<'a> ReportReader<'a> {
     /// problems comes from, as `rhythm findings` lists it; `None` for a job
     /// that has never stated one.
     pub(crate) fn read_stating(&mut self, job: Job) -> Result<(JobReport, Option<Stated>)> {
-        let (runs, stated) = match &job.recorded {
+        let (runs, stated, last_session_run) = match &job.recorded {
             Some(store) => {
                 let ledger = self
                     .opened
                     .entry(store.clone())
                     .or_insert_with(|| (self.ledgers)(store));
                 match ledger {
-                    Some(ledger) => ledger.recent_stating(&job.label)?,
-                    None => (RecentRuns::default(), None),
+                    Some(ledger) => {
+                        let (runs, stated) = ledger.recent_stating(&job.label)?;
+                        let last_session_run = crate::sessions::Store::existing(ledger.root())
+                            .ok()
+                            .flatten()
+                            .and_then(|store| store.latest_for_job(&job.label).ok().flatten());
+                        (runs, stated, last_session_run)
+                    }
+                    None => (RecentRuns::default(), None, None),
                 }
             }
-            None => (RecentRuns::default(), None),
+            None => (RecentRuns::default(), None, None),
         };
-        Ok((JobReport::new(job, runs), stated))
+        Ok((
+            JobReport {
+                last_session_run,
+                ..JobReport::new(job, runs)
+            },
+            stated,
+        ))
     }
 }
 

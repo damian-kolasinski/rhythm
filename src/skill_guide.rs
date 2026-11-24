@@ -11,6 +11,7 @@ pub const REFERENCES: &[(&str, &str)] = &[
     ("status", include_str!("../docs/status.md")),
     ("runs", include_str!("../docs/runs.md")),
     ("results", include_str!("../docs/results.md")),
+    ("sessions", include_str!("../docs/sessions.md")),
     ("authoring", include_str!("../docs/authoring.md")),
     ("attention", include_str!("../docs/attention.md")),
     ("agents", include_str!("../docs/agents.md")),

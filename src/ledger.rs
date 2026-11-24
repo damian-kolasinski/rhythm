@@ -5,7 +5,11 @@ use crate::{
     operation_error::{Error, Result},
     private_storage::{self, Root},
     retention::{self, Stored},
-    runs::{Outcome, RecentRuns, ResultError, Run, RunReport, RunState, Summary, Timestamp},
+    runs::{
+        Outcome, RecentRuns, ResultError, Run, RunReport, RunState, SessionSpawns, Summary,
+        Timestamp,
+    },
+    sessions::Store,
 };
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::{
@@ -52,6 +56,10 @@ pub struct Ledger {
     root: Root,
 }
 impl Ledger {
+    pub fn root(&self) -> &Root {
+        &self.root
+    }
+
     pub fn open(root: Root, wait: Duration) -> Result<Self> {
         let path = root.path().join(FILE);
         // Switching a new database to WAL and creating its schema race between
@@ -312,7 +320,8 @@ impl Ledger {
             .connection
             .unchecked_transaction()
             .map_err(|_| Error::StorageUnavailable)?;
-        let last_run = self.newest(label, "AND skipped = 0")?;
+        let mut last_run = self.newest(label, "AND skipped = 0")?;
+        self.read_session_spawns(last_run.as_mut_slice());
         let after = last_run.as_ref().map_or(0, |r| r.id);
         let last_skip = self.newest(label, &format!("AND skipped = 1 AND id > {after}"))?;
         let verdict = self
@@ -354,25 +363,53 @@ impl Ledger {
             .optional()
             .map_err(|_| Error::StorageUnavailable)?
             .unwrap_or(0);
-        self.connection
+        let mut runs = self
+            .connection
             .prepare(&format!(
                 "SELECT {COLUMNS} FROM runs WHERE label = ?1 AND id >= ?2 ORDER BY id DESC"
             ))
             .and_then(|mut s| {
                 s.query_map(params![label, oldest], |r| run(r, &self.root))?
-                    .collect()
+                    .collect::<rusqlite::Result<Vec<_>>>()
             })
-            .map_err(|_| Error::StorageUnavailable)
+            .map_err(|_| Error::StorageUnavailable)?;
+        self.read_session_spawns(&mut runs);
+        Ok(runs)
     }
     pub fn run(&self, id: i64) -> Result<Option<Run>> {
-        self.connection
+        let mut run = self
+            .connection
             .query_row(
                 &format!("SELECT {COLUMNS} FROM runs WHERE id = ?1"),
                 [id],
                 |r| run(r, &self.root),
             )
             .optional()
-            .map_err(|_| Error::StorageUnavailable)
+            .map_err(|_| Error::StorageUnavailable)?;
+        self.read_session_spawns(run.as_mut_slice());
+        Ok(run)
+    }
+
+    fn read_session_spawns(&self, runs: &mut [Run]) {
+        let Ok(Some(store)) = Store::existing(&self.root) else {
+            return;
+        };
+        for run in runs {
+            if let RunState::Finished { report, .. } = &mut run.state
+                && let Ok(count @ 1..) = store.count_for_run(run.id)
+            {
+                report.session_spawns = Some(SessionSpawns { count });
+            }
+        }
+    }
+
+    pub(crate) fn session_spawns(&self, id: i64) -> Option<SessionSpawns> {
+        let count = Store::existing(&self.root)
+            .ok()
+            .flatten()?
+            .count_for_run(id)
+            .ok()?;
+        (count > 0).then_some(SessionSpawns { count })
     }
 }
 
@@ -397,6 +434,7 @@ fn run(row: &Row, root: &Root) -> rusqlite::Result<Run> {
                     .get::<_, Option<String>>(9)?
                     .and_then(|json| serde_json::from_str::<OpenSet>(&json).ok())
                     .map(|set| RunFindings::from(&set)),
+                session_spawns: None,
             },
         },
         _ => {

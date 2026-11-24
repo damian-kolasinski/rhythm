@@ -19,6 +19,13 @@ pub enum Error {
     StorageUnavailable,
     InsecureStorage,
     UnsupportedSchema,
+    SessionNotFound,
+    SessionProfileNotFound,
+    SessionWorkspaceFailed,
+    SessionLauncherUnavailable,
+    SessionLaunchUnconfirmed,
+    SessionLauncherRejected,
+    SessionResetRefused,
     DefinitionsUnavailable,
     UnsupportedPlatform,
     SupervisorUnavailable,
@@ -68,6 +75,19 @@ impl Error {
             Self::InsecureStorage => "Rhythm's private storage is accessible to other users.",
             Self::UnsupportedSchema => {
                 "Rhythm's run ledger was written by an incompatible version."
+            }
+            Self::SessionNotFound => "No session matches.",
+            Self::SessionProfileNotFound => "No session launch profile matches.",
+            Self::SessionWorkspaceFailed => "Rhythm could not prepare the session worktree.",
+            Self::SessionLauncherUnavailable => "Rhythm could not start the session launcher.",
+            Self::SessionLauncherRejected => {
+                "The launcher rejected the request before creating a session. Check the T3 server and project configuration."
+            }
+            Self::SessionResetRefused => {
+                "Only an unconfirmed launch older than five minutes without an outcome can be forgotten."
+            }
+            Self::SessionLaunchUnconfirmed => {
+                "The launcher did not confirm whether it started the session. Check the provider for the session before starting another."
             }
             Self::DefinitionsUnavailable => "The LaunchAgents directory cannot be read.",
             Self::UnsupportedPlatform => "This command needs macOS launchd.",

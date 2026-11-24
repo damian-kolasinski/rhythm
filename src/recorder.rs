@@ -122,6 +122,8 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
             eprintln!("rhythm: this run cannot be recorded ({error}); running the command anyway");
             let error = command(&recording.program)
                 .env_remove(run_result::VARIABLE)
+                .env_remove(crate::sessions::RUN_ID)
+                .env_remove(crate::sessions::DATA_DIR)
                 .exec();
             eprintln!("rhythm: the command could not be started");
             std::process::exit(exit_code_for(&error));
@@ -135,6 +137,9 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
     // Only a run with private storage can take a result file. An inherited
     // variable, as from an enclosing recorded job, names another run's file.
     let mut command = command(&recording.program);
+    command
+        .env(crate::sessions::RUN_ID, id.to_string())
+        .env(crate::sessions::DATA_DIR, ledger.root().path());
     match &dir {
         Some(dir) => command.env(run_result::VARIABLE, run_result::path(dir)),
         None => command.env_remove(run_result::VARIABLE),
@@ -207,8 +212,11 @@ pub fn record(target: Result<(Ledger, Label)>, recording: Recording) -> ! {
         .map_or_else(Collected::nothing, run_result::collect);
     let ended_at = Timestamp::now();
     let stated = open_findings(&ledger, &label, collected.findings, ended_at);
+    let session_spawns = ledger.session_spawns(id);
     let report = RunReport {
+        skipped: collected.report.skipped && session_spawns.is_none(),
         findings: stated.as_ref().map(RunFindings::from),
+        session_spawns,
         ..collected.report
     };
     if ledger

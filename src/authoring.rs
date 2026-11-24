@@ -145,7 +145,7 @@ fn owned(supervisor: &impl Supervisor, label: &Label) -> Result<bool> {
 }
 
 /// Mise shims and user tools first, because launchd's own PATH has neither.
-fn default_path(home: &Path) -> Result<String> {
+pub(crate) fn default_path(home: &Path) -> Result<String> {
     let home = home.to_str().ok_or(Error::InvalidRequest)?;
     Ok(format!(
         "{home}/.local/bin:{home}/.local/share/mise/shims:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -180,7 +180,7 @@ fn executable(program: &str, caller: &Caller) -> Result<String> {
 }
 
 /// A regular file this user may execute.
-fn is_executable(path: &Path) -> bool {
+pub(crate) fn is_executable(path: &Path) -> bool {
     let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_bytes()) else {
         return false;
     };
