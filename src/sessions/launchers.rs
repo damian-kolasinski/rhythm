@@ -116,7 +116,7 @@ impl Launcher for LocalLaunchers<'_> {
                     .map_err(|_| LaunchFailure::Unconfirmed)?;
                 let provider_id = reply
                     .thread_id
-                    .filter(|id| provider_id(id))
+                    .filter(|id| t3_thread_id(id))
                     .ok_or(LaunchFailure::Unconfirmed)?;
                 let link = reply.link.filter(|link| web_link(link) || t3_link(link));
                 Ok(Launch {
@@ -285,6 +285,7 @@ fn t3_rejected(stderr: &[u8]) -> bool {
             || line.starts_with("No T3 Code project matches ")
             || line.starts_with("This T3 Code server has no t3_thread_launch tool.")
             || line.starts_with("The server refused the arguments:")
+            || line.starts_with("Pass modelSelection: the project has no default model.")
     })
 }
 
@@ -315,6 +316,14 @@ fn provider_id(id: &str) -> bool {
         && id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"-_".contains(&b))
+}
+
+fn t3_thread_id(id: &str) -> bool {
+    (6..=128).contains(&id.len())
+        && id.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b))
 }
 
 fn t3_link(link: &str) -> bool {
