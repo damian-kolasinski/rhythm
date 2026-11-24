@@ -95,10 +95,11 @@ start)
     prompt=$(cat)
     case "$prompt" in *'Record the outcome in Rhythm'*) ;; *) exit 3 ;; esac
     echo launch >> "$0.calls"
-    printf '{"threadId":"synthetic-id"}\n'
+    printf '{"threadId":"mcp:synthetic-id"}\n'
     ;;
 show)
-    printf '{"thread":{"threadId":"synthetic-id","status":"idle","pendingRequestCount":1,"link":"https://example.com/threads/synthetic-id"},"messages":[]}\n'
+    [ "${8}" = mcp:synthetic-id ]
+    printf '{"thread":{"threadId":"mcp:synthetic-id","status":"idle","pendingRequestCount":1,"link":"https://example.com/threads/mcp%%3Asynthetic-id"},"messages":[]}\n'
     ;;
 esac
 "#);
@@ -138,12 +139,12 @@ printf '{"version":1,"skipped":true}' > "$RHYTHM_RESULT"
     assert!(run.get("skipped").is_none());
     let run = run["id"].as_i64().unwrap().to_string();
     let sessions = f.json(&["session", "list", "--run", &run]);
-    assert_eq!(sessions[0]["launch"]["provider_id"], "synthetic-id");
+    assert_eq!(sessions[0]["launch"]["provider_id"], "mcp:synthetic-id");
     let shown = f.json(&["session", "show", ids[0]]);
     assert_eq!(shown["activity"], "waiting");
     assert_eq!(
         shown["launch"]["link"],
-        "https://example.com/threads/synthetic-id"
+        "https://example.com/threads/mcp%3Asynthetic-id"
     );
     assert_eq!(shown["outcome"], Value::Null);
     let pr = "https://example.com/owner/project/pull/42";
@@ -270,7 +271,7 @@ fn a_definite_t3_rejection_allows_the_same_key_on_the_next_run() {
     let launcher = f.launcher(
         r#"
 if [ ! -f "$0.ready" ]; then
-    echo 'No T3 Code project matches fixture.' >&2
+    echo 'Pass modelSelection: the project has no default model. Select a model.' >&2
     exit 1
 fi
 printf '{"threadId":"synthetic-id"}\n'
