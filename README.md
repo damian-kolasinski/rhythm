@@ -59,10 +59,10 @@ success and `1` for any failure, including one unreachable host.
 ```sh
 mise run check
 cargo test --locked
-python distribution/smoke.py --binary target/debug/rhythm --version 0.4.1
+python distribution/smoke.py --binary target/debug/rhythm --version 0.5.0
 # Optional checks that register disposable agents with the real user launchd:
 cargo test --locked --test launchd_e2e -- --ignored
-python distribution/smoke.py --binary target/debug/rhythm --version 0.4.1 --launchd
+python distribution/smoke.py --binary target/debug/rhythm --version 0.5.0 --launchd
 target/debug/rhythm demo
 ```
 
